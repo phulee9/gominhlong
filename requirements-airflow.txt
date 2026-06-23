@@ -1,0 +1,6 @@
+# Cài trên máy chạy Airflow (scheduler/worker), KHÔNG cần cho việc chạy main.py CLI.
+apache-airflow>=2.8.0
+
+# Cùng các package trong requirements.txt (pandas, openpyxl, psycopg2-binary, minio...)
+# vì DAG import trực tiếp code trong src/.
+-r requirements.txt

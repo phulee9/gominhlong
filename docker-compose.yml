@@ -1,0 +1,33 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: excel-pipeline-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: Inda1234
+      POSTGRES_DB: data_warehouse
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio:latest
+    container_name: excel-pipeline-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"   # API
+      - "9001:9001"   # Console: http://localhost:9001
+    volumes:
+      - minio_data:/data
+
+volumes:
+  pg_data:
+  minio_data:

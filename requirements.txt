@@ -1,0 +1,15 @@
+# Core dependencies
+pandas>=2.0.0
+openpyxl>=3.1.0
+pyyaml>=6.0
+
+# Database
+psycopg2-binary>=2.9.0
+
+# MinIO
+minio>=7.2.0
+
+# Lưu ý: apache-airflow KHÔNG nằm trong file này.
+# Code trong src/ (transformers, tasks, file_registry, file_matcher...) không
+# phụ thuộc Airflow — chạy được độc lập qua main.py. Chỉ máy chạy Airflow
+# scheduler/worker mới cần cài thêm, xem requirements-airflow.txt.
