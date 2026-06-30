@@ -92,7 +92,7 @@ def run(
         local_path=file_path,
         minio_prefix=file_cfg.minio_prefix,
         file_id=file_id,
-        batch_id=batch_id,
+  
     )
 
     # Ghi FileRegistry
@@ -106,6 +106,9 @@ def run(
     )
     logger.info(f"[upload_task] {file_id}: ✓ {minio_path}")
 
+    # Cleanup bản cũ, chỉ giữ 12 bản gần nhất (3 tháng)
+    _cleanup_old_versions(registry=registry, minio=minio, file_id=file_id)
+    
     return UploadResult(
         file_id=file_id,
         batch_id=batch_id,
@@ -122,3 +125,24 @@ def _md5_file(path: str) -> str:
         for chunk in iter(lambda: f.read(8192), b""):
             h.update(chunk)
     return h.hexdigest()
+
+def _cleanup_old_versions(
+    registry: FileRegistry,
+    minio: MinioClient,
+    file_id: str,
+    keep_last: int = 12,  # 3 tháng × 4 tuần
+) -> None:
+    """Xóa bản cũ trên MinIO và FileRegistry, chỉ giữ keep_last bản."""
+    old_records = registry.get_old_versions(file_id, keep_last=keep_last)
+    if not old_records:
+        return
+    for record in old_records:
+        try:
+            minio.delete_object(record["minio_path"])
+        except Exception as e:
+            logger.warning("[cleanup] Không xóa được MinIO %s: %s", record["minio_path"], e)
+            continue  # không xóa registry nếu MinIO lỗi
+        try:
+            registry.delete_batch(record["batch_id"])
+        except Exception as e:
+            logger.warning("[cleanup] Không xóa được registry %s: %s", record["batch_id"], e)

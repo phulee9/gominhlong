@@ -8,7 +8,8 @@ class FactAccountsReceivableTransformer(BaseTransformer):
     def transform(self, df: pd.DataFrame, ctx: TransformContext) -> pd.DataFrame:
         # 1. Xóa các dòng rác (thường là dòng "Tổng cộng" ở cuối file MISA)
         # Giả sử cột 'Partner_Code' rỗng thì đó là dòng tổng cộng
-        df = df.dropna(subset=['Partner_Code'])
+        first_four_cols = df.columns[:4].tolist()
+        df = df.dropna(subset=first_four_cols, how='all')
 
         # 2. Tạo cột ID tự tăng
         df = df.reset_index(drop=True)

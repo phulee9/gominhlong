@@ -37,20 +37,13 @@ def match_file_ids(file_path: str, config: PipelineConfig) -> List[str]:
             matched.append(file_cfg.file_id)
     return matched
 
-
 def match_files_in_dir(dir_path: str, config: PipelineConfig) -> dict:
-    """
-    Quét 1 thư mục local, trả về dict {file_path: [file_id, ...]} cho mọi file
-    khớp ít nhất 1 file_id trong config.
-
-    Dùng cho:
-      - Task "detect_changed_files" đầu DAG: quét landing zone mỗi lần chạy,
-        biết file nào vừa xuất hiện/đổi và cần upload+load file_id nào.
-      - CLI tiện ích: tự đoán --id khi người dùng chỉ đưa --file.
-    """
     result = {}
-    for path in Path(dir_path).glob("*"):
+    for path in Path(dir_path).rglob("*"):  # ← rglob thay vì glob
         if not path.is_file():
+            continue
+        # Lọc temp file Excel
+        if path.name.startswith("~$") or path.name.startswith("."):
             continue
         ids = match_file_ids(str(path), config)
         if ids:

@@ -230,3 +230,37 @@ class FileRegistry:
                     (file_id, limit),
                 )
                 return [dict(r) for r in cur.fetchall()]
+    # ------------------------------------------------------------------
+    # Cleanup bản cũ (upload_task)
+    # ------------------------------------------------------------------
+
+    def get_old_versions(self, file_id: str, keep_last: int) -> list[dict]:
+        """Trả về các record cũ hơn keep_last bản gần nhất."""
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=self.extras.RealDictCursor) as cur:
+                cur.execute(
+                    f"""
+                    SELECT batch_id, minio_path
+                    FROM {self.schema}._file_registry
+                    WHERE file_id = %s
+                    ORDER BY created_at DESC
+                    OFFSET %s
+                    """,
+                    (file_id, keep_last),
+                )
+                return [dict(r) for r in cur.fetchall()]
+
+    def delete_batch(self, batch_id: str) -> None:
+        """Xóa 1 batch khỏi registry và sheets liên quan."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"DELETE FROM {self.schema}._file_registry_sheets WHERE batch_id = %s",
+                    (batch_id,),
+                )
+                cur.execute(
+                    f"DELETE FROM {self.schema}._file_registry WHERE batch_id = %s",
+                    (batch_id,),
+                )
+            conn.commit()
+        logger.info(f"[file_registry] Đã xóa batch: {batch_id}")

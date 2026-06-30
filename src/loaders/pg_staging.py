@@ -164,6 +164,11 @@ class PgStagingManager:
         CẢNH BÁO: condition được truyền trực tiếp vào SQL.
         Chỉ dùng với giá trị đến từ config YAML — không nhận input từ user.
         """
+
+        if "{" in condition and "}" in condition:
+            logger.info(f"  Bỏ qua lệnh xóa thô '{condition}'. Dữ liệu sẽ được tự động xóa chính xác sau khi tải DataFrame.")
+            return 0
+
         sql = f"DELETE FROM {table_fqn} WHERE {condition};"
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -206,6 +211,31 @@ class PgStagingManager:
 
         # Lấy delete_condition an toàn (field mới, không có trong SheetConfig cũ)
         delete_condition = getattr(sheet_cfg, "delete_condition", None)
+
+        # =====================================================================
+        # TỰ ĐỘNG TÌM NGÀY ĐỂ BƠM VÀO LỆNH XÓA
+        # =====================================================================
+        if delete_condition and "{" in delete_condition and not df.empty:
+            # Khai báo các cột ngày tháng chuẩn của hệ thống
+            date_columns = ['Posting_Date', 'Snapshot_Date', 'Month', 'Reporting_Date', 'Invoice_Date']
+            
+            # Quét xem dataframe hiện tại có cột nào khớp không
+            target_date_col = next((col for col in date_columns if col in df.columns), None)
+            
+            if target_date_col:
+                # Ép kiểu ngày tháng an toàn và bỏ các dòng trống
+                date_series = pd.to_datetime(df[target_date_col], errors='coerce').dropna()
+                
+                if not date_series.empty:
+                    min_date = date_series.min().strftime('%Y-%m-%d')
+                    max_date = date_series.max().strftime('%Y-%m-%d')
+                    
+                    # Bơm ngày thực tế vào các biến {min_date}, {max_date} trong YAML
+                    delete_condition = delete_condition.format(
+                        min_date=min_date, 
+                        max_date=max_date
+                    )
+                    logger.info(f"  [Auto-Detect] Tự động set điều kiện xóa: {delete_condition}")
 
         with self._connect() as conn:
             with conn.cursor() as cur:

@@ -35,16 +35,21 @@ class MinioClient:
         local_path: str,
         minio_prefix: str,
         file_id: str,
-        batch_id: str,
     ) -> str:
         """
         Upload file excel lên MinIO với naming convention:
         {prefix}/{file_id}/{YYYY/MM/DD}/{batch_id}/{filename}
         """
+        from datetime import datetime, timezone, timedelta
+
+
         local = Path(local_path)
-        ts = datetime.utcnow()
-        date_path = ts.strftime("%Y/%m/%d")
-        object_name = f"{minio_prefix.strip('/')}/{date_path}/{batch_id}/{local.name}"
+        VN_TZ = timezone(timedelta(hours=7))
+        ts = datetime.now(VN_TZ)  # ← giờ VN (UTC+7)
+        # Thành
+        date_str = ts.strftime("%Y-%m-%d")
+        time_str = ts.strftime("%H-%M")
+        object_name = f"{minio_prefix.strip('/')}/{date_str}/{time_str}/{local.name}"
 
         # Tính checksum để verify
         md5 = self._md5_file(local_path)
@@ -56,7 +61,6 @@ class MinioClient:
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             metadata={
                 "file_id": file_id,
-                "batch_id": batch_id,
                 "original_name": local.name,
                 "md5": md5,
                 "uploaded_at": ts.isoformat(),
@@ -85,3 +89,9 @@ class MinioClient:
             for chunk in iter(lambda: f.read(8192), b""):
                 h.update(chunk)
         return h.hexdigest()
+    
+    def delete_object(self, minio_path: str) -> None:
+        """Xóa 1 object trên MinIO. minio_path dạng s3://bucket/prefix/..."""
+        bucket, object_name = self._parse_minio_path(minio_path)
+        self.client.remove_object(bucket, object_name)
+        logger.info(f"[minio] Đã xóa: {minio_path}")

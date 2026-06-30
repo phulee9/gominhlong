@@ -13,10 +13,10 @@ connections:
     bucket_raw: "raw-excel"          # Bucket lưu file excel gốc
 
   postgresql:
-    host: "172.19.32.1"             # <--- ĐÃ SỬA THÀNH IP CỦA WINDOWS
+    host: "localhost"
     port: 5432
-    database: "postgres"
-    user: "postgres"
+    database: "data_warehouse"
+    user: "dev"
     password: "Inda1234"
     schema_staging: "silver"        # Schema cho bảng bronze
     schema_silver: "silver"
@@ -42,8 +42,8 @@ excel_files:
   - file_id: "dim_partner_khach_hang"
     description: "Danh mục đối tác - Nhóm Khách hàng"
     type: "single_table"
-    source_pattern: "data/raw/misa/Danh_sach_khach_hang*.xlsx"
-    minio_prefix: "misa/Danh_sach_khach_hang"
+    source_pattern: "excel-pipeline/raw/misa/Danh_sach_khach_hang*.xlsx"
+    minio_prefix: "misa/excel/Danh_sach_khach_hang"
     sheets:
       - sheet_index: 0
         header_row: 3
@@ -80,8 +80,8 @@ excel_files:
   - file_id: "dim_partner_nha_cung_cap"
     description: "Danh mục đối tác - Nhóm Nhà cung cấp"
     type: "single_table"
-    source_pattern: "data/raw/misa/Danh_sach_nha_cung_cap*.xlsx"
-    minio_prefix: "misa/Danh_sach_nha_cung_cap"
+    source_pattern: "excel-pipeline/raw/misa/Danh_sach_nha_cung_cap*.xlsx"
+    minio_prefix: "misa/excel/Danh_sach_nha_cung_cap"
     sheets:
       - sheet_index: 0
         header_row: 3
@@ -119,8 +119,8 @@ excel_files:
   - file_id: "dim_account"
     description: "Danh mục hệ thống tài khoản kế toán và số tài khoản ngân hàng định danh"
     type: "single_table"
-    source_pattern: "data/raw/misa/Danh_sach_he_thong_tai_khoan*.xlsx"
-    minio_prefix: "misa/Danh_sach_he_thong_tai_khoan"
+    source_pattern: "excel-pipeline/raw/misa/Danh_sach_he_thong_tai_khoan*.xlsx"
+    minio_prefix: "misa/excel/Danh_sach_he_thong_tai_khoan"
     sheets:
       - sheet_index: 0
         header_row: 3
@@ -152,8 +152,8 @@ excel_files:
   - file_id: "dim_account_number"
     description: "Danh mục số tài khoản ngân hàng và mã ngân hàng tương ứng"
     type: "single_table"
-    source_pattern: "data/raw/misa/Danh_sach_tai_khoan_ngan_hang*.xlsx"
-    minio_prefix: "misa/Danh_sach_tai_khoan_ngan_hang"
+    source_pattern: "excel-pipeline/raw/misa/Danh_sach_tai_khoan_ngan_hang*.xlsx"
+    minio_prefix: "misa/excel/Danh_sach_tai_khoan_ngan_hang"
     sheets:
       - sheet_index: 0
         header_row: 3
@@ -185,8 +185,8 @@ excel_files:
   - file_id: "dim_bank"
     description: "Danh mục các ngân hàng - Lớp Silver"
     type: "single_table"
-    source_pattern: "data/raw/misa/Danh_sach_ngan_hang*.xlsx"
-    minio_prefix: "misa/Danh_sach_ngan_hang"
+    source_pattern: "excel-pipeline/raw/misa/Danh_sach_ngan_hang*.xlsx"
+    minio_prefix: "misa/excel/Danh_sach_ngan_hang"
     sheets:
       - sheet_index: 0
         header_row: 3                   # Bỏ dòng 1-2, tiêu đề nằm ở dòng 3
@@ -216,8 +216,8 @@ excel_files:
   - file_id: "dim_warehouse"
     description: "Danh mục kho bãi - Lớp Silver"
     type: "single_table"
-    source_pattern: "data/raw/misa/Danh_sach_kho*.xlsx"
-    minio_prefix: "misa/Danh_sach_kho"
+    source_pattern: "excel-pipeline/raw/misa/Danh_sach_kho*.xlsx"
+    minio_prefix: "misa/excel/Danh_sach_kho"
     sheets:
       - sheet_index: 0
         header_row: 3                   # Bỏ dòng 1-2, tiêu đề nằm ở dòng 3 (index 2 trong pandas)
@@ -247,8 +247,8 @@ excel_files:
   - file_id: "dim_product"
     description: "Danh mục vật tư, sản phẩm, hàng hóa - Lớp Silver"
     type: "single_table"
-    source_pattern: "data/raw/misa/Danh_sach_hang_hoa_dich_vu*.xlsx"
-    minio_prefix: "misa/Danh_sach_hang_hoa_dich_vu"
+    source_pattern: "excel-pipeline/raw/misa/Danh_sach_hang_hoa_dich_vu*.xlsx"
+    minio_prefix: "misa/excel/Danh_sach_hang_hoa_dich_vu"
     sheets:
       - sheet_index: 0
         header_row: 3                   # Bỏ dòng 1-2, tiêu đề ở dòng 3
@@ -285,8 +285,8 @@ excel_files:
   - file_id: "dim_report_item_b01"
     description: "Danh mục chỉ tiêu báo cáo tài chính B01-DN"
     type: "single_table"
-    source_pattern: "data/raw/misa/B01*DN*.xlsx"   # Khớp các file B01 DN
-    minio_prefix: "misa/b01_bao_cao_tai_chinh"
+    source_pattern: "excel-pipeline/raw/misa/B01*DN*.xlsx"   # Khớp các file B01 DN
+    minio_prefix: "misa/excel/b01_bao_cao_tai_chinh"
     sheets:
       - sheet_index: 0
         header_row: 12                  # Bỏ qua dòng 1-11, tiêu đề ở dòng 12
@@ -322,8 +322,8 @@ excel_files:
   - file_id: "dim_report_item_b02"
     description: "Danh mục chỉ tiêu báo cáo tài chính B02-DN"
     type: "single_table"
-    source_pattern: "data/raw/misa/B02*DN*.xlsx"   # Khớp các file B02 DN
-    minio_prefix: "misa/b02_bao_cao_hoat_dong_kinh_doanh"
+    source_pattern: "excel-pipeline/raw/misa/B02*DN*.xlsx"   # Khớp các file B02 DN
+    minio_prefix: "misa/excel/b02_bao_cao_hoat_dong_kinh_doanh"
     sheets:
       - sheet_index: 0
         header_row: 7                   # Bỏ qua dòng 1-6, tiêu đề ở dòng 7
@@ -361,8 +361,8 @@ excel_files:
   - file_id: "fact_inventory_outward"
     description: "Sổ chi tiết bán hàng - Ghi nhận xuất kho bán hàng"
     type: "single_table"
-    source_pattern: "data/raw/misa/So_chi_tiet_ban_hang*.xlsx"
-    minio_prefix: "misa/So_chi_tiet_ban_hang"
+    source_pattern: "excel-pipeline/raw/misa/So_chi_tiet_ban_hang*.xlsx"
+    minio_prefix: "misa/excel/So_chi_tiet_ban_hang"
     sheets:
       - sheet_index: 0
         header_row: 8                   # Bỏ dòng 1-7, tiêu đề nằm ở dòng 8
@@ -375,7 +375,7 @@ excel_files:
         
         # ĐIỀU KIỆN ROLLBACK (Ví dụ: Xóa sạch dữ liệu tháng 6/2026 trước khi nạp lại file tháng 6)
         # Khi bạn nạp file của tháng khác, hãy sửa lại ngày ở điều kiện này cho khớp.
-        delete_condition: "Posting_Date >= '{min_date}' AND Posting_Date <= '{max_date}'"
+        delete_condition: "Posting_Date >= '2026-06-01' AND Posting_Date <= '2026-06-30'"
 
         field_mapping:
           - source: "Ngày hạch toán"
@@ -427,8 +427,8 @@ excel_files:
   - file_id: "fact_inventory_inward"
     description: "Sổ chi tiết mua hàng - Ghi nhận nhập kho vật tư hàng hóa"
     type: "single_table"
-    source_pattern: "data/raw/misa/So_chi_tiet_mua_hang*.xlsx"
-    minio_prefix: "misa/So_chi_tiet_mua_hang"
+    source_pattern: "excel-pipeline/raw/misa/So_chi_tiet_mua_hang*.xlsx"
+    minio_prefix: "misa/excel/So_chi_tiet_mua_hang"
     sheets:
       - sheet_index: 0
         header_row: 8                   # Bỏ dòng 1-7, tiêu đề ở dòng 8
@@ -441,7 +441,7 @@ excel_files:
         
         # Điều kiện xóa dữ liệu cũ (Rollback) trước khi nạp lại
         # Lưu ý: Cập nhật điều kiện này theo đúng tháng của file bạn định nạp
-        delete_condition: "Posting_Date >= '{min_date}' AND Posting_Date <= '{max_date}'"
+        delete_condition: "Posting_Date >= '2026-06-01' AND Posting_Date <= '2026-06-30'"
 
         field_mapping:
           - source: "Ngày hạch toán"
@@ -493,8 +493,8 @@ excel_files:
   - file_id: "fact_inventory_balance"
     description: "Tổng hợp tồn kho - Ghi nhận chốt số lượng/giá trị tồn cuối kỳ"
     type: "single_table"
-    source_pattern: "data/raw/misa/Tong_hop_ton_kho*.xlsx"
-    minio_prefix: "misa/Tong_hop_ton_kho"
+    source_pattern: "excel-pipeline/raw/misa/Tong_hop_ton_kho*.xlsx"
+    minio_prefix: "misa/excel/Tong_hop_ton_kho"
     sheets:
       - sheet_index: 0
         header_row: [8, 9]              # Khai báo mảng để gộp dòng tiêu đề 8 và 9
@@ -504,7 +504,7 @@ excel_files:
         truncate_before_load: false     # Không xóa lịch sử để tracking tồn kho qua các tháng
         
         # Điều kiện Rollback (Xóa đúng dữ liệu của kỳ lấy báo cáo trước khi nạp đè)
-        delete_condition: "Snapshot_Date = '{max_date}'"
+        delete_condition: "Snapshot_Date = '2026-05-09'" 
 
         field_mapping:
           - source: "Mã kho"
@@ -537,8 +537,8 @@ excel_files:
   - file_id: "fact_cashflow"
     description: "Sổ chi tiết các tài khoản - Theo dõi dòng tiền và công nợ"
     type: "single_table"
-    source_pattern: "data/raw/misa/So_chi_tiet_cac_tai_khoan*.xlsx"
-    minio_prefix: "misa/So_chi_tiet_cac_tai_khoan"
+    source_pattern: "excel-pipeline/raw/misa/So_chi_tiet_cac_tai_khoan*.xlsx"
+    minio_prefix: "misa/excel/So_chi_tiet_cac_tai_khoan"
     sheets:
       - sheet_index: 0
         header_row: 8                   # Bỏ dòng 1-7, tiêu đề ở dòng 8
@@ -548,7 +548,7 @@ excel_files:
         truncate_before_load: false     # Giữ lịch sử
         
         # Điều kiện Rollback theo kỳ báo cáo
-        delete_condition: "Posting_Date >= '{min_date}' AND Posting_Date <= '{max_date}'"
+        delete_condition: "Posting_Date >= '2026-04-01' AND Posting_Date <= '2026-04-30'"
 
         field_mapping:
           - source: "Ngày hạch toán"
@@ -599,8 +599,8 @@ excel_files:
   - file_id: "fact_income_statement"
     description: "Báo cáo kết quả hoạt động kinh doanh (B02-DN) - Số liệu phát sinh"
     type: "single_table"
-    source_pattern: "data/raw/misa/B02*DN*.xlsx"
-    minio_prefix: "misa/b02_bao_cao_hoat_dong_kinh_doanh"
+    source_pattern: "excel-pipeline/raw/misa/B02*DN*.xlsx"
+    minio_prefix: "misa/excel/b02_bao_cao_hoat_dong_kinh_doanh"
     sheets:
       - sheet_index: 0
         header_row: 7                   # Bỏ dòng 1-6, tiêu đề nằm ở dòng 7
@@ -610,7 +610,7 @@ excel_files:
         truncate_before_load: false     # Giữ lịch sử các tháng
         
         # Điều kiện Rollback theo tháng (Dựa vào cột Month)
-        delete_condition: "Month >= '{min_date}' AND Month <= '{max_date}'"
+        delete_condition: "Month >= '2026-06-01' AND Month <= '2026-06-30'"
 
         field_mapping:
           - source: "Mã số"
@@ -641,8 +641,8 @@ excel_files:
   - file_id: "fact_business_plan"
     description: "Kế hoạch kinh doanh nội bộ (KQKD_pa1) - Dữ liệu Target/KPI"
     type: "single_table"
-    source_pattern: "data/raw/noibo/Ke_hoach_kinh_doanh_minh_long_2026.xlsx"
-    minio_prefix: "noibo/Ke_hoach_kinh_doanh_minh_long_2026"
+    source_pattern: "raw/mailan/Ke_hoach_kinh_doanh_minh_long_2026.xlsx"
+    minio_prefix: "misa/excel/Ke_hoach_kinh_doanh_minh_long_2026"
     sheets:
       - sheet_name: "KQKD_pa1"          # Gọi đích danh tên Sheet chứa dữ liệu
         header_row: 5                   # Bỏ dòng 1-4, tiêu đề nằm ở dòng 5 (dòng chứa chữ T1...T12)
@@ -673,8 +673,8 @@ excel_files:
   - file_id: "fact_balance_sheet"
     description: "Báo cáo Tình hình Tài chính (B01-DN) - Số dư đầu kỳ/cuối kỳ"
     type: "single_table"
-    source_pattern: "data/raw/misa/B01*DN*.xlsx"
-    minio_prefix: "misa/b01_bao_cao_tai_chinh"
+    source_pattern: "excel-pipeline/raw/misa/B01*DN*.xlsx"
+    minio_prefix: "misa/excel/b01_bao_cao_tai_chinh"
     sheets:
       - sheet_index: 0
         header_row: 12                  # Tiêu đề ở dòng 12 (đã trừ 1 thành 11)
@@ -684,7 +684,7 @@ excel_files:
         truncate_before_load: false     # Giữ lịch sử báo cáo
         
         # Xóa dữ liệu kỳ cũ trước khi nạp kỳ mới
-        delete_condition: "Reporting_Date = '{max_date}'" # Ngày chốt báo cáo thực tế trên file
+        delete_condition: "Reporting_Date = '2026-06-19'" # Ngày chốt báo cáo thực tế trên file
 
         field_mapping:
           - source: "Mã số"
@@ -712,27 +712,18 @@ excel_files:
   - file_id: "fact_term_deposit"
     description: "Hợp đồng tiền gửi - Theo dõi lãi suất và kỳ hạn"
     type: "single_table"
-    source_pattern: "data/raw/noibo/Hop_dong_tien_gui*.xlsm"
-    minio_prefix: "noibo/Hop_dong_tien_gui"
+    source_pattern: "excel-pipeline/raw/mailan/Hop_dong_tien_gui*.xlsm"
+    minio_prefix: "misa/mailan/Hop_dong_tien_gui"
     sheets:
       - sheet_index: 0
-        header_row: 4                   # Dòng 4 trong Excel (1-indexed) chứa header: STT, CTY, BANK, LS (%)...
+        header_row: 4                   # Dòng 3 (0-indexed) chính là Row 3 mà script tìm thấy
         data_start_row: 5               # Dữ liệu bắt đầu từ dòng ngay sau đó
         target_table: "Fact_TermDeposit"
         transformer_class: "fact_term_deposit"
-        truncate_before_load: true
-
+        truncate_before_load: false
+        
         field_mapping:
-          # NOTE: STT được thêm vào để transformer dùng làm tín hiệu lọc bỏ
-          # các "dòng tổng nhóm" (subtotal rows theo công ty/ngân hàng, ví dụ
-          # SỐ SỔ = 'MINH LONG', 'MB', 'HD', 'LP', 'AGR', 'IVB', 'WOORI', 'VP').
-          # Các dòng tổng này luôn có STT trống, còn dòng hợp đồng thật luôn
-          # có STT là số nguyên tăng dần. Không map STT -> target sẽ khiến
-          # transformer không có cột để filter và lọt dòng tổng vào bảng fact.
-          - source: "STT"
-            target: "STT"
-            dtype: "integer"
-          - source: "SỐ SỔ"             # bỏ dấu cách cuối trong header gốc
+          - source: "SỐ SỔ"             # ← bỏ dấu cách cuối
             target: "Passbook_No"
             dtype: "varchar(100)"
           - source: "BANK"
@@ -744,21 +735,22 @@ excel_files:
           - source: "KỲ HẠN"
             target: "Term"
             dtype: "integer"
-          - source: "TRỊ GIÁ GỐC"      # cột G — đúng với mapping nghiệp vụ cung cấp
+          - source: "TRỊ GIÁ GỐC"      # ← bỏ dấu cách cuối
             target: "Original_Amount"
             dtype: "numeric(18,2)"
-          - source: "GIÁ TRỊ CÒN LẠI"   # cột L — đúng với mapping nghiệp vụ cung cấp
+          - source: "GIÁ TRỊ CÒN LẠI"
             target: "Remaining_Value"
             dtype: "numeric(18,2)"
           - source: "NGÀY GỬI"
             target: "Deposit_Date"
             dtype: "date"
-          - source: "NGÀY ĐÁO"          # bỏ dấu cách cuối trong header gốc
+          - source: "NGÀY ĐÁO"          # ← bỏ dấu cách cuối
             target: "Maturity_Date"
             dtype: "date"
           - source: "NGÀY T/TOÁN"
             target: "Settlement_Date"
             dtype: "date"
+
         metadata_columns:
           - name: "ID"
             dtype: "integer"
@@ -774,8 +766,8 @@ excel_files:
   - file_id: "fact_accounts_receivable"
     description: "Chi tiết công nợ phải thu khách hàng"
     type: "single_table"
-    source_pattern: "data/raw/misa/Chi_tiet_cong_no_phai_thu_khach_hang*.xlsx"
-    minio_prefix: "misa/Chi_tiet_cong_no_phai_thu_khach_hang"
+    source_pattern: "excel-pipeline/raw/misa/Chi_tiet_cong_no_phai_thu_khach_hang*.xlsx"
+    minio_prefix: "misa/excel/Chi_tiet_cong_no_phai_thu_khach_hang"
     sheets:
       - sheet_index: 0
         header_row: [8, 9]      # ← đổi từ 7 thành [8, 9] (Row 7+8 theo 1-indexed)
@@ -840,8 +832,8 @@ excel_files:
   - file_id: "fact_accounts_payable"
     description: "Chi tiết công nợ phải trả nhà cung cấp"
     type: "single_table"
-    source_pattern: "data/raw/misa/Chi_tiet_cong_no_phai_tra_nha_cung_cap*.xlsx"
-    minio_prefix: "misa/Chi_tiet_cong_no_phai_tra_nha_cung_cap"
+    source_pattern: "excel-pipeline/raw/misa/Chi_tiet_cong_no_phai_tra_nha_cung_cap*.xlsx"
+    minio_prefix: "misa/excel/Chi_tiet_cong_no_phai_tra_nha_cung_cap"
     sheets:
       - sheet_index: 0
         header_row: [8, 9]        # Row 7+8 (1-indexed) → multi-header giống file phải thu
@@ -906,8 +898,8 @@ excel_files:
   - file_id: "fact_credit_limit_summary"
     description: "Tổng hợp hạn mức tín dụng ngân hàng"
     type: "multi_table"
-    source_pattern: "data/raw/noibo/*bc_tin_dung*.xlsx"
-    minio_prefix: "noibo/bc_tin_dung"
+    source_pattern: "excel-pipeline/raw/mailan/*bc_tin_dung*.xlsx"
+    minio_prefix: "noibo/mailan/bc_tin_dung"
     sheets:
       - sheet_name: "Theo dõi vay NH"
         header_row: 1
@@ -917,9 +909,6 @@ excel_files:
         truncate_before_load: true
 
         field_mapping:
-          - source: "STT"              # ← THÊM DÒNG NÀY (chỉ để transformer dùng nội bộ, sẽ tự xoá)
-            target: "STT"
-            dtype: "varchar(50)"
           - source: "NH"
             target: "Bank_Code"
             dtype: "varchar(50)"
@@ -954,8 +943,8 @@ excel_files:
   - file_id: "fact_loan"
     description: "Chi tiết các khoản vay ngân hàng"
     type: "single_table"
-    source_pattern: "data/raw/noibo/*bc_tin_dung*.xlsx"
-    minio_prefix: "noibo/bc_tin_dung"
+    source_pattern: "excel-pipeline/raw/mailan/*bc_tin_dung*.xlsx"
+    minio_prefix: "noibo/mailan/bc_tin_dung"
     sheets:
       - sheet_name: "Theo dõi vay NH"
         header_row: 12        # Row 12 là header thật (1-indexed)
@@ -1006,8 +995,8 @@ excel_files:
   - file_id: "fact_collateral"
     description: "Tài sản thế chấp tại các ngân hàng"
     type: "single_table"
-    source_pattern: "data/raw/noibo/*bc_tin_dung*.xlsx" # Đảm bảo file trong raw/mailan khớp pattern này
-    minio_prefix: "noibo/bc_tin_dung"
+    source_pattern: "excel-pipeline/raw/mailan/*bc_tin_dung*.xlsx" # Đảm bảo file trong raw/mailan khớp pattern này
+    minio_prefix: "noibo/mailan/bc_tin_dung"
     sheets:
       - sheet_name: "TSBĐ Bank"
         header_row: 2

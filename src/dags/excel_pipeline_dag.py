@@ -1,68 +1,111 @@
 """
-excel_pipeline_dag.py - DAG chính: quét landing folder, tự map file -> (các) file_id
-liên quan, rồi upload + load TỪNG file_id như 1 task riêng.
+excel_pipeline_dag.py - DAG chính: Nạp tự động (Auto) hoặc thủ công (Force Run).
 
-KHÁC VỚI BẢN CŨ:
-  Bản cũ có 1 danh sách FILE_TASKS hard-code cứng (file_path_template, file_id),
-  không tận dụng `source_pattern` đã khai báo sẵn trong pipeline_config.yaml.
-  Mỗi khi có file mới phải tự sửa DAG.
-
-  Bản mới: 1 task `detect_changed_files` quét LANDING_DIR, dùng
-  `src/file_matcher.py` để so khớp tên file với source_pattern của TỪNG
-  file_id trong config — 1 file có thể khớp NHIỀU file_id (vd file
-  "bc_tin_dung*.xlsx" sinh ra cả fact_loan + fact_credit_limit_summary +
-  fact_collateral). Mỗi (file, file_id) khớp được trở thành 1 task upload +
-  1 task load riêng, chạy qua Airflow Dynamic Task Mapping (.expand()) —
-  KHÔNG cần sửa DAG khi thêm file_id mới trong YAML.
-
-  upload_task tự so MD5 với FileRegistry — file không đổi sẽ tự skip ở bước
-  upload, và load_one() sẽ skip theo (trừ khi force_load=True trong dag conf).
-  => Đúng yêu cầu "file nào đổi thì chỉ chạy lại file đó".
-
-THỨ TỰ NẠP DIM_BANK TRƯỚC:
-  Dim_AccountNumber cần tra Bank_Code từ Dim_Bank (xem
-  src/transformers/dim_account_number.py). Vì vậy các file_id trong
-  PRIORITY_FILE_IDS được upload+load thành 1 "wave" riêng, xong mới chạy
-  wave còn lại.
-
-Cấu hình qua dag_run.conf (trigger DAG w/ config):
-  {
-    "landing_dir": "/data/raw",       # mặc định LANDING_DIR
-    "file_ids": ["fact_loan"],        # chỉ chạy các file_id này (rỗng = tất cả khớp được)
-    "force_upload": false,            # bỏ qua MD5 check, luôn upload lại
-    "force_load": false               # vẫn load dù upload bị skip (MD5 không đổi)
-  }
-
-Cài đặt:
-  pip install apache-airflow
-  export AIRFLOW_HOME=~/airflow
-  airflow db init
+FIXES so với phiên bản cũ:
+  Fix 1 — Import SDK Airflow 3.x (dag, task, Param từ airflow.sdk)
+  Fix 2 — expand() trên list rỗng gây lỗi "no task to map" khi priority=[];
+           dùng task chained thay vì expand trực tiếp trên list rỗng.
+  Fix 3 — DAG run conf là dict, không dùng được context["dag_run"].conf khi
+           chạy từ Scheduler (conf=None); đã thêm guard `or {}`.
+  Fix 4 — Thiếu dependency giữa loaded_priority và uploaded_others khi dùng
+           dynamic task mapping — dùng trigger_rule để tránh skip cascade.
 """
 from __future__ import annotations
-
 import logging
-import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
-from airflow.decorators import dag, task
+# ─── Fix 1: Import từ airflow.sdk (Airflow 3.x) ───────────────────────────
+try:
+    from airflow.sdk import dag, task, Param  # Airflow 3.x
+except ImportError:
+    from airflow.decorators import dag, task   # Airflow 2.x fallback
+    from airflow.models.param import Param
+# ──────────────────────────────────────────────────────────────────────────
 
-# Điều chỉnh đường dẫn tới project của bạn trên Airflow worker
-PROJECT_ROOT = "/opt/excel-pipeline"
-CONFIG_PATH = f"{PROJECT_ROOT}/config/pipeline_config.yaml"
-LANDING_DIR = "/data/raw"  # quét đệ quy thư mục này (gồm cả raw/misa, raw/mailan...)
+from airflow.utils.trigger_rule import TriggerRule
 
-# file_id cần được load TRƯỚC các file_id khác (vì có transformer phụ thuộc lookup)
-PRIORITY_FILE_IDS = ["dim_bank"]
+PROJECT_ROOT = "/mnt/c/excel-pipeline"
+CONFIG_PATH  = f"{PROJECT_ROOT}/config/pipeline_config.yaml"
+LANDING_DIR  = "data/raw"
+
+# File_id nào cần chạy trước các file khác (Dim trước Fact)
+PRIORITY_FILE_IDS = {"dim_bank"}
 
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# UI PARAMS
+# =============================================================================
+AUTO_CHOICE = "--- Tự động quét tất cả file thay đổi (Auto) ---"
+
+UI_PARAMS = {
+    "report_name": Param(
+        AUTO_CHOICE,
+        type="string",
+        enum=[
+            AUTO_CHOICE,
+            "1. Báo cáo Tín dụng & TSĐB (bc_tin_dung_2026.xlsx + Hop_dong_tien_gui.xlsm)",
+            "2. Báo cáo Tài chính B01 (B01 DN Bao cao tinh hinh tai chinh.xlsx)",
+            "3. Báo cáo KQKD B02 (B02 DN Bao cao ket qua hoat dong kinh doanh.xlsx)",
+            "4. Công nợ Phải Thu KH (Chi_tiet_cong_no_phai_thu_khach_hang.xlsx)",
+            "5. Công nợ Phải Trả NCC (Chi_tiet_cong_no_phai_tra_nha_cung_cap.xlsx)",
+            "6. Sổ chi tiết Dòng tiền (So_chi_tiet_cac_tai_khoan.xlsx)",
+            "7. Tổng hợp Tồn kho (Tong_hop_ton_kho.xlsx)",
+            "8. Sổ chi tiết Mua hàng (So_chi_tiet_mua_hang.xlsx)",
+            "9. Sổ chi tiết Bán hàng (So_chi_tiet_ban_hang.xlsx)",
+            "10. Kế hoạch Kinh doanh (Ke_hoach_kinh_doanh_minh_long_2026.xlsx)",
+            "11. Danh mục Đối tác (Danh_sach_khach_hang.xlsx + Danh_sach_nha_cung_cap.xlsx)",
+            "12. Danh mục TK & Ngân hàng (Danh_sach_ngan_hang.xlsx + he_thong_tai_khoan + tai_khoan_ngan_hang)",
+            "13. Danh mục Hàng hóa & Kho (Danh_sach_hang_hoa_dich_vu.xlsx + Danh_sach_kho.xlsx)",
+        ],
+        description=(
+            "Chọn báo cáo muốn NẠP ÉP (Force Run). "
+            "Để 'Auto' hệ thống tự quét file thay đổi (so MD5)."
+        ),
+    )
+}
+
+# Map label UI → danh sách file_id
+_REPORT_MAP: dict[str, list[str]] = {
+    AUTO_CHOICE: [],
+    "1. Báo cáo Tín dụng & TSĐB (bc_tin_dung_2026.xlsx + Hop_dong_tien_gui.xlsm)":
+        ["fact_loan", "fact_collateral", "fact_credit_limit_summary", "fact_term_deposit"],
+    "2. Báo cáo Tài chính B01 (B01 DN Bao cao tinh hinh tai chinh.xlsx)":
+        ["fact_balance_sheet", "dim_report_item_b01"],
+    "3. Báo cáo KQKD B02 (B02 DN Bao cao ket qua hoat dong kinh doanh.xlsx)":
+        ["fact_income_statement", "dim_report_item_b02"],
+    "4. Công nợ Phải Thu KH (Chi_tiet_cong_no_phai_thu_khach_hang.xlsx)":
+        ["fact_accounts_receivable"],
+    "5. Công nợ Phải Trả NCC (Chi_tiet_cong_no_phai_tra_nha_cung_cap.xlsx)":
+        ["fact_accounts_payable"],
+    "6. Sổ chi tiết Dòng tiền (So_chi_tiet_cac_tai_khoan.xlsx)":
+        ["fact_cashflow"],
+    "7. Tổng hợp Tồn kho (Tong_hop_ton_kho.xlsx)":
+        ["fact_inventory_balance"],
+    "8. Sổ chi tiết Mua hàng (So_chi_tiet_mua_hang.xlsx)":
+        ["fact_inventory_inward"],
+    "9. Sổ chi tiết Bán hàng (So_chi_tiet_ban_hang.xlsx)":
+        ["fact_inventory_outward"],
+    "10. Kế hoạch Kinh doanh (Ke_hoach_kinh_doanh_minh_long_2026.xlsx)":
+        ["fact_business_plan"],
+    "11. Danh mục Đối tác (Danh_sach_khach_hang.xlsx + Danh_sach_nha_cung_cap.xlsx)":
+        ["dim_partner_khach_hang", "dim_partner_nha_cung_cap"],
+    "12. Danh mục TK & Ngân hàng (Danh_sach_ngan_hang.xlsx + he_thong_tai_khoan + tai_khoan_ngan_hang)":
+        ["dim_account", "dim_account_number", "dim_bank"],
+    "13. Danh mục Hàng hóa & Kho (Danh_sach_hang_hoa_dich_vu.xlsx + Danh_sach_kho.xlsx)":
+        ["dim_product", "dim_warehouse"],
+}
+
+
+# =============================================================================
+# Helpers
+# =============================================================================
+
 def _project_imports():
-    """Import muộn (sau khi sys.path đã chỉnh) để Airflow parse DAG file không lỗi
-    khi project chưa nằm trong PYTHONPATH lúc DAG file được Airflow scan."""
     import sys
     if PROJECT_ROOT not in sys.path:
         sys.path.insert(0, PROJECT_ROOT)
@@ -72,94 +115,161 @@ def _project_imports():
     return load_config, match_files_in_dir, load_task, upload_task
 
 
+def _is_force_run(params: dict, conf: dict) -> bool:
+    """True khi chạy thủ công qua UI hoặc conf có force_upload=True."""
+    report_name = params.get("report_name", AUTO_CHOICE)
+    return report_name != AUTO_CHOICE or bool(conf.get("force_upload", False))
+
+
+# =============================================================================
+# DAG
+# =============================================================================
+
 default_args = {
     "owner": "data-team",
     "retries": 1,
-    "retry_delay": __import__("datetime").timedelta(minutes=5),
+    "retry_delay": timedelta(minutes=5),
 }
 
 
 @dag(
     dag_id="excel_pipeline",
     default_args=default_args,
-    description="Excel → MinIO → Silver: tự phát hiện file đổi, tự map sang bảng liên quan",
-    schedule="0 7 * * *",      # Airflow >= 2.4 dùng `schedule`; bản cũ dùng `schedule_interval`
+    description="Nạp dữ liệu Excel: Tự động (Auto) hoặc Thủ công (Force Run qua UI)",
+    schedule="0 0 * * 5",
     start_date=datetime(2026, 1, 1),
     catchup=False,
+    params=UI_PARAMS,
     tags=["excel", "pipeline", "silver"],
 )
 def excel_pipeline_dag():
 
+    # ─────────────────────────────────────────────────────────────────────
+    # TASK 1: Quét file và phân loại priority / normal
+    # ─────────────────────────────────────────────────────────────────────
     @task
-    def detect_changed_files(**context) -> Dict[str, List[Dict[str, str]]]:
-        """
-        Quét LANDING_DIR, so khớp source_pattern -> ra danh sách (file_path, file_id).
-        Tách riêng các file_id nằm trong PRIORITY_FILE_IDS thành wave 1.
-        """
+    def detect_changed_files(**context) -> dict[str, list[dict[str, str]]]:
+        import os
+        os.chdir(PROJECT_ROOT)
+
         load_config, match_files_in_dir, _, _ = _project_imports()
 
-        conf = (context.get("dag_run").conf if context.get("dag_run") else {}) or {}
-        landing_dir = conf.get("landing_dir", LANDING_DIR)
-        only_file_ids = set(conf.get("file_ids") or [])
+        # Fix 3: conf có thể là None khi chạy từ scheduler
+        params  = context.get("params") or {}
+        dag_run = context.get("dag_run")
+        conf    = (dag_run.conf if dag_run else None) or {}
+
+        report_name  = params.get("report_name", AUTO_CHOICE)
+        ui_file_ids  = set(_REPORT_MAP.get(report_name, []))
+        extra_ids    = set(conf.get("file_ids") or [])
+        only_file_ids = ui_file_ids | extra_ids  # rỗng = lấy tất cả
 
         config = load_config(CONFIG_PATH)
-        matches = match_files_in_dir(landing_dir, config)  # {file_path: [file_id, ...]}
 
-        if not matches:
-            logger.warning(f"Không tìm thấy file nào khớp source_pattern trong {landing_dir}")
+        # Quét đệ quy toàn bộ landing_dir
+        all_matches: dict[str, list[str]] = {}
+        for root, _dirs, _files in os.walk(LANDING_DIR):
+            sub = match_files_in_dir(root, config)
+            if sub:
+                all_matches.update(sub)
+
+        if not all_matches:
+            logger.warning("Không tìm thấy file nào khớp trong %s", LANDING_DIR)
 
         priority, normal = [], []
-        for file_path, file_ids in matches.items():
+        for file_path, file_ids in all_matches.items():
             for file_id in file_ids:
                 if only_file_ids and file_id not in only_file_ids:
                     continue
                 item = {"file_path": file_path, "file_id": file_id}
-                if file_id in PRIORITY_FILE_IDS:
-                    priority.append(item)
-                else:
-                    normal.append(item)
+                (priority if file_id in PRIORITY_FILE_IDS else normal).append(item)
 
         logger.info(
-            f"Phát hiện {len(priority)} task wave 1 (priority) + "
-            f"{len(normal)} task wave 2 (normal)"
+            "Phát hiện %d task wave 1 (priority) + %d task wave 2 (normal)",
+            len(priority), len(normal),
         )
         return {"priority": priority, "normal": normal}
 
+    # ─────────────────────────────────────────────────────────────────────
+    # Tách priority / normal từ XCom
+    # ─────────────────────────────────────────────────────────────────────
     @task
-    def upload_one(file_info: Dict[str, str], **context) -> Dict[str, Any]:
-        load_config, _, _, upload_task = _project_imports()
-        conf = (context.get("dag_run").conf if context.get("dag_run") else {}) or {}
-        force_upload = bool(conf.get("force_upload", False))
+    def extract_priority(files_dict: dict) -> list[dict]:
+        return files_dict.get("priority") or []
 
-        config = load_config(CONFIG_PATH)
-        batch_id = f"{file_info['file_id']}_{context['ts_nodash']}_{uuid.uuid4().hex[:8]}"
+    @task
+    def extract_normal(files_dict: dict) -> list[dict]:
+        return files_dict.get("normal") or []
+
+    # ─────────────────────────────────────────────────────────────────────
+    # TASK 2: Upload lên MinIO
+    # Trả về upload_result dict để task load đọc.
+    # Nếu skipped=True (MD5 không đổi) và không force → load sẽ tự bỏ qua.
+    # ─────────────────────────────────────────────────────────────────────
+    @task(retries=2, retry_delay=timedelta(minutes=2))
+    def upload_one(file_info: dict[str, str], **context) -> dict[str, Any]:
+        import os
+        os.chdir(PROJECT_ROOT)
+        load_config, _, _, upload_task = _project_imports()
+
+        params  = context.get("params") or {}
+        dag_run = context.get("dag_run")
+        conf    = (dag_run.conf if dag_run else None) or {}
+        force   = _is_force_run(params, conf)
+
+        config   = load_config(CONFIG_PATH)
+        batch_id = (
+            f"{file_info['file_id']}"
+            f"_{context['ts_nodash']}"
+            f"_{uuid.uuid4().hex[:8]}"
+        )
 
         result = upload_task.run(
             file_path=file_info["file_path"],
             file_id=file_info["file_id"],
             config=config,
             batch_id=batch_id,
-            force_upload=force_upload,
+            force_upload=force,
+        )
+
+        logger.info(
+            "[upload] %s | batch=%s | skipped=%s | path=%s",
+            result.file_id, result.batch_id, result.skipped, result.minio_path,
         )
         return {
-            "file_id": result.file_id,
-            "batch_id": result.batch_id,
+            "file_id":    result.file_id,
+            "batch_id":   result.batch_id,
             "minio_path": result.minio_path,
-            "skipped": result.skipped,
+            "skipped":    result.skipped,
         }
 
-    @task
-    def load_one(upload_result: Dict[str, Any], **context) -> Dict[str, Any]:
+    # ─────────────────────────────────────────────────────────────────────
+    # TASK 3: Load vào PostgreSQL
+    # Fix 4: trigger_rule=ALL_DONE agar task này không bị skip cascade
+    #        khi upstream dynamic task có 1 instance fail.
+    # ─────────────────────────────────────────────────────────────────────
+    @task(
+        retries=1,
+        retry_delay=timedelta(minutes=3),
+        trigger_rule=TriggerRule.ALL_DONE,   # Fix 4
+    )
+    def load_one(upload_result: dict[str, Any], **context) -> dict[str, Any]:
+        import os
+        os.chdir(PROJECT_ROOT)
         load_config, _, load_task, _ = _project_imports()
-        conf = (context.get("dag_run").conf if context.get("dag_run") else {}) or {}
-        force_load = bool(conf.get("force_load", False))
 
-        if upload_result["skipped"] and not force_load:
+        params  = context.get("params") or {}
+        dag_run = context.get("dag_run")
+        conf    = (dag_run.conf if dag_run else None) or {}
+        force   = _is_force_run(params, conf) or bool(conf.get("force_load", False))
+
+        # Skip nếu upload không đổi và không force
+        if upload_result["skipped"] and not force:
             logger.info(
-                f"[load] {upload_result['file_id']}: upload skipped (MD5 không đổi) "
-                f"+ force_load=False -> bỏ qua load."
+                "[load] %s: MD5 không đổi + force=False → bỏ qua.",
+                upload_result["file_id"],
             )
-            return {"file_id": upload_result["file_id"], "status": "skipped"}
+            return {"file_id": upload_result["file_id"], "status": "skipped", "rows": 0}
 
         config = load_config(CONFIG_PATH)
         result = load_task.run(
@@ -170,22 +280,95 @@ def excel_pipeline_dag():
         )
 
         if not result.success:
-            failed = {s: r.error for s, r in result.sheets.items() if r.status == "error"}
-            raise RuntimeError(f"Load {upload_result['file_id']} thất bại: {failed}")
+            failed = {
+                s: r.error
+                for s, r in result.sheets.items()
+                if r.status == "error"
+            }
+            raise RuntimeError(
+                f"Load '{upload_result['file_id']}' thất bại: {failed}"
+            )
 
-        return {"file_id": upload_result["file_id"], "status": "success", "rows": result.total_rows}
+        logger.info(
+            "[load] %s: %d dòng | batch=%s",
+            upload_result["file_id"], result.total_rows, upload_result["batch_id"],
+        )
+        return {
+            "file_id": upload_result["file_id"],
+            "status":  "success",
+            "rows":    result.total_rows,
+        }
 
-    files = detect_changed_files()
+    # ─────────────────────────────────────────────────────────────────────
+    # TASK 4 (optional): Tổng kết và ghi log cuối DAG run
+    # ─────────────────────────────────────────────────────────────────────
+    @task(trigger_rule=TriggerRule.ALL_DONE)
+    def summarize(
+        priority_results: list[dict],
+        normal_results: list[dict],
+    ) -> dict[str, Any]:
+        # Fix: ép về list thật trước khi concat
+        p = list(priority_results) if priority_results else []
+        n = list(normal_results)   if normal_results   else []
+        all_results = p + n
 
-    # Wave 1: các file_id mà bảng khác phụ thuộc lookup (vd dim_bank) -> load xong hết mới qua wave 2
-    uploaded_priority = upload_one.expand(file_info=files["priority"])
-    loaded_priority = load_one.expand(upload_result=uploaded_priority)
+        success    = [r for r in all_results if r.get("status") == "success"]
+        skipped    = [r for r in all_results if r.get("status") == "skipped"]
+        failed     = [r for r in all_results if r.get("status") not in ("success", "skipped")]
+        total_rows = sum(r.get("rows", 0) for r in success)
 
-    # Wave 2: tất cả file_id còn lại
-    uploaded_normal = upload_one.expand(file_info=files["normal"])
-    loaded_normal = load_one.expand(upload_result=uploaded_normal)
+        logger.info("=" * 60)
+        logger.info("TỔNG KẾT DAG RUN")
+        logger.info("  ✓ Thành công : %d file | %d dòng", len(success), total_rows)
+        logger.info("  ⏭ Bỏ qua    : %d file (MD5 không đổi)", len(skipped))
+        logger.info("  ✗ Lỗi       : %d file", len(failed))
+        if failed:
+            for r in failed:
+                logger.error("    - %s", r.get("file_id", "unknown"))
+        logger.info("=" * 60)
 
+        return {
+            "success_count": len(success),
+            "skipped_count": len(skipped),
+            "failed_count":  len(failed),
+            "total_rows":    total_rows,
+        }
+    # ─────────────────────────────────────────────────────────────────────
+    # WIRE UP — 2 wave, priority xong trước normal
+    #
+    #   detect → extract_priority → upload_one[] → load_one[]  ─┐
+    #                                                             ├→ summarize
+    #   detect → extract_normal   → upload_one[] → load_one[]  ─┘
+    #
+    # loaded_priority >> uploaded_normal đảm bảo Dim load xong trước Fact
+    # ─────────────────────────────────────────────────────────────────────
+   # ─── WIRE UP ───────────────────────────────────────────────────────────────
+    files_dict = detect_changed_files()
+
+    priority_list = extract_priority(files_dict)
+    normal_list   = extract_normal(files_dict)
+
+    # Wave 1: Priority (Dim)
+    uploaded_priority = upload_one.expand(file_info=priority_list)
+    loaded_priority   = load_one.expand(upload_result=uploaded_priority)
+
+    # Wave 2: Normal (Fact) — thêm .override() để không bị skip cascade từ wave 1
+    uploaded_normal = upload_one.override(
+        trigger_rule=TriggerRule.ALL_DONE,
+    ).expand(file_info=normal_list)
+
+    loaded_normal = load_one.override(
+        trigger_rule=TriggerRule.ALL_DONE,
+    ).expand(upload_result=uploaded_normal)
+
+    # Wave 1 xong mới chạy Wave 2
     loaded_priority >> uploaded_normal
+
+    # Tổng kết
+    summarize(
+        priority_results=loaded_priority,
+        normal_results=loaded_normal,
+    )
 
 
 excel_pipeline_dag()
