@@ -46,6 +46,8 @@ class SheetConfig:
     # Dùng khi truncate_before_load=False và không muốn upsert.
     # Ví dụ: "Posting_Date >= '2026-06-01' AND Posting_Date <= '2026-06-30'"
     delete_condition: Optional[str] = None
+    read_all_sheets: bool = False
+    restart_identity: bool = False
 
     @property
     def load_mode(self) -> str:
@@ -138,6 +140,8 @@ def load_config(config_path: str = "config/pipeline_config.yaml") -> PipelineCon
                 upsert_key=s.get("upsert_key"),
                 transformer_class=s.get("transformer_class"),
                 delete_condition=s.get("delete_condition"),      # ← MỚI
+                read_all_sheets=s.get("read_all_sheets", False),  # thêm dòng này
+                restart_identity=s.get("restart_identity", False),  # ← THÊM DÒNG NÀY
             ))
         excel_files.append(ExcelFileConfig(
             file_id=ef["file_id"],

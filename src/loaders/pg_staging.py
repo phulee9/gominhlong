@@ -142,13 +142,17 @@ class PgStagingManager:
     # DML: Truncate / Delete
     # ------------------------------------------------------------------
 
-    def truncate_table(self, table_fqn: str):
+    def truncate_table(self, table_fqn: str, restart_identity: bool = False):
         """Xóa toàn bộ dữ liệu trong bảng. Dùng cho rollback."""
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(f"TRUNCATE TABLE {table_fqn};")
+                sql = f"TRUNCATE TABLE {table_fqn}"
+                if restart_identity:
+                    sql += " RESTART IDENTITY"
+                sql += ";"
+                cur.execute(sql)
             conn.commit()
-        logger.info(f"  Đã truncate: {table_fqn}")
+        logger.info(f"  Đã truncate: {table_fqn}" + (" (reset _id về 1)" if restart_identity else ""))
 
     def delete_by_condition(self, table_fqn: str, condition: str):
         """
@@ -239,9 +243,19 @@ class PgStagingManager:
 
         with self._connect() as conn:
             with conn.cursor() as cur:
-                if sheet_cfg.load_mode == "truncate":
-                    cur.execute(f"TRUNCATE TABLE {table_fqn};")
-                    logger.info(f"  Đã truncate: {table_fqn}")
+                is_truncate = (
+                    sheet_cfg.load_mode == "truncate"
+                    or getattr(sheet_cfg, "truncate_before_load", False)
+                )
+                logger.info(f"  [DEBUG] sheet={sheet_cfg.sheet_name} truncate_before_load={sheet_cfg.truncate_before_load} load_mode={sheet_cfg.load_mode} is_truncate={is_truncate}")
+                if is_truncate:
+                    restart = getattr(sheet_cfg, "restart_identity", False)
+                    logger.info(f"  restart_identity = {restart}")  # ← thêm dòng này
+                    sql = f"TRUNCATE TABLE {table_fqn}"
+                    if restart:
+                        sql += " RESTART IDENTITY"
+                    cur.execute(sql + ";")
+                    logger.info(f"  Đã truncate: {table_fqn}" + (" (reset _id → 1)" if restart else ""))
                     count = self._bulk_insert(cur, df, table_fqn)
 
                 elif delete_condition:

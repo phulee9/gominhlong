@@ -99,8 +99,9 @@ python main.py detect --dir /data/raw/misa
 
 # Chạy luôn không cần --id — tự suy ra qua source_pattern
 # (nếu 1 file khớp NHIỀU file_id, CLI tự chạy lần lượt tất cả)
-python main.py run --file /data/raw/mailan/bc_tin_dung_2026.xlsx
 
+python main.py run --file /data/raw/mailan/bc_tin_dung_2026.xlsx
+python main.py run --file data/raw/misa/B01_DN_Bao_cao_tinh_hinh_tai_chinh.xlsx data/raw/misa/B02_DN_Bao_cao_ket_qua_hoat_dong_kinh_doanh.xlsx
 # Vẫn dùng được --id nếu muốn chỉ định chính xác
 python main.py run --file bao_cao.xlsx --id fact_cashflow
 ```

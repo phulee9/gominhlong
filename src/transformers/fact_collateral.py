@@ -44,4 +44,7 @@ class FactCollateralTransformer(BaseTransformer):
 
         df = df.reset_index(drop=True)
         df['Row_ID'] = df.index + 1
+        
+        df["Bank_Code"] = df["Bank_Code"].str.upper()
+
         return df

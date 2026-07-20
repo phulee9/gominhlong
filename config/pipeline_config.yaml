@@ -7,8 +7,8 @@
 connections:
   minio:
     endpoint: "localhost:9000"
-    access_key: "minioadmin"
-    secret_key: "minioadmin"
+    access_key: "admin"
+    secret_key: "Inda1234"
     secure: false
     bucket_raw: "raw-excel"          # Bucket lưu file excel gốc
 
@@ -50,7 +50,8 @@ excel_files:
         data_start_row: 4
         target_table: "Dim_Partner"
         transformer_class: "dim_partner"
-        truncate_before_load: false   
+        truncate_before_load: true
+        restart_identity: true
 
         field_mapping:
           - source: "Mã khách hàng"
@@ -88,7 +89,15 @@ excel_files:
         data_start_row: 4
         target_table: "Dim_Partner"
         transformer_class: "dim_partner"
-        truncate_before_load: false  # KHÔNG TRUNCATE để giữ lại dữ liệu Khách hàng vừa nạp
+        # QUAN TRỌNG: Phải là true dù tên gợi ý "append"
+        # Lý do: transformer DimPartner (batch 2) gọi ctx.lookup("Dim_Partner")
+        # để đọc KH từ DB TRƯỚC khi load_dataframe() chạy — thứ tự thực tế là:
+        #   transform() → lookup KH từ DB → dedup KH+NCC → load_dataframe() → TRUNCATE → INSERT kết quả
+        # Nên lúc truncate, KH đã được đọc xong và nằm trong df_final rồi.
+        # Kết quả sau truncate: bảng chứa đủ KH_pure + NCC_pure + trùng (KH/NCC)
+        # KHÔNG được đổi thành false — sẽ bị duplicate dữ liệu KH từ batch 1
+        truncate_before_load: true
+        restart_identity: true
 
         field_mapping:
           - source: "Mã nhà cung cấp"
@@ -121,13 +130,15 @@ excel_files:
     type: "single_table"
     source_pattern: "data/raw/misa/Danh_sach_he_thong_tai_khoan*.xlsx"
     minio_prefix: "misa/Danh_sach_he_thong_tai_khoan"
+    
     sheets:
       - sheet_index: 0
         header_row: 3
         data_start_row: 4
         target_table: "Dim_Account"
         transformer_class: "dim_account"
-        truncate_before_load: true   # Luôn dọn sạch bảng cũ để làm mới danh mục
+        truncate_before_load: true
+        restart_identity: true
 
         field_mapping:
           - source: "Số tài khoản"
@@ -160,7 +171,9 @@ excel_files:
         data_start_row: 4
         target_table: "Dim_AccountNumber"
         transformer_class: "dim_account_number"
+        # Dim_AccountNumber
         truncate_before_load: true
+        restart_identity: true
 
         field_mapping:
           - source: "Số tài khoản"
@@ -183,27 +196,30 @@ excel_files:
   # 7. DANH MỤC NGÂN HÀNG (DIM_BANK)
   # ---------------------------------------------------------------------------
   - file_id: "dim_bank"
-    description: "Danh mục các ngân hàng - Lớp Silver"
+    description: "Danh mục ngân hàng - Silver"
     type: "single_table"
     source_pattern: "data/raw/misa/Danh_sach_ngan_hang*.xlsx"
     minio_prefix: "misa/Danh_sach_ngan_hang"
     sheets:
       - sheet_index: 0
-        header_row: 3                   # Bỏ dòng 1-2, tiêu đề nằm ở dòng 3
-        data_start_row: 4               # Dữ liệu bắt đầu từ dòng 4
+        header_row: 3
+        data_start_row: 4
         target_table: "Dim_Bank"
-        truncate_before_load: true      # Luôn xóa trắng dọn sạch dữ liệu cũ để làm mới danh mục
-
+        transformer_class: "dim_bank"     # THÊM
+        truncate_before_load: true
+        restart_identity: true
         field_mapping:
           - source: "Tên viết tắt"
             target: "Bank_Code"
             dtype: "varchar(50)"
-            
           - source: "Tên đầy đủ"
             target: "Bank_Name"
             dtype: "varchar(500)"
-
         metadata_columns:
+          - name: "Code1"                 # THÊM
+            dtype: "varchar(50)"
+          - name: "Code2"
+            dtype: "varchar(50)"
           - name: "_source_file"
             dtype: "varchar(500)"
           - name: "_loaded_at"
@@ -223,7 +239,8 @@ excel_files:
         header_row: 3                   # Bỏ dòng 1-2, tiêu đề nằm ở dòng 3 (index 2 trong pandas)
         data_start_row: 4               # Dữ liệu thực tế bắt đầu từ dòng 4
         target_table: "Dim_Warehouse"
-        truncate_before_load: true      # Xóa sạch dữ liệu cũ khi nạp lại để đảm bảo danh mục luôn mới nhất
+        truncate_before_load: true
+        restart_identity: true
 
         field_mapping:
           - source: "Mã kho"
@@ -256,20 +273,23 @@ excel_files:
         target_table: "Dim_Product"
         transformer_class: "dim_product"
         truncate_before_load: true      # Xóa sạch bảng cũ để làm mới danh mục
+        read_all_sheets: true 
+        restart_identity: true
+
 
         field_mapping:
-          - source: "Mã"
+          - source: "Mã"                    # ← đúng tên cột trong file
             target: "Product_Code"
             dtype: "varchar(255)"
-          - source: "Tên"
+          - source: "Tên"                   # ← đúng tên cột trong file
             target: "Product_Name"
             dtype: "text"
-          - source: "Đơn vị tính chính"
-            target: "Unit_of_Measure"   # Dùng gạch dưới thay dấu cách để tránh lỗi cú pháp SQL
+          - source: "Đơn vị tính chính"    # ← đúng tên cột trong file
+            target: "Unit_of_Measure"
             dtype: "varchar(50)"
 
         metadata_columns:
-          - name: "Product_Category"    # Cột nhóm sản phẩm xử lý tự động bằng Python
+          - name: "Product_Category"
             dtype: "varchar(100)"
           - name: "_source_file"
             dtype: "varchar(500)"
@@ -294,6 +314,7 @@ excel_files:
         target_table: "Dim_ReportItem"
         transformer_class: "dim_report_item"
         truncate_before_load: true      # Xóa sạch bảng cũ để nạp mới từ đầu
+        restart_identity: true
 
         # Định nghĩa rỗng để Python tự quét cột động dựa vào vị trí A:J và K:L
         field_mapping: []
@@ -437,7 +458,7 @@ excel_files:
         transformer_class: "fact_inventory_inward"
         
         # KHÔNG TRUNCATE để giữ lịch sử, dùng cơ chế Rollback theo kỳ
-        truncate_before_load: false     
+        truncate_before_load: false
         
         # Điều kiện xóa dữ liệu cũ (Rollback) trước khi nạp lại
         # Lưu ý: Cập nhật điều kiện này theo đúng tháng của file bạn định nạp
@@ -501,9 +522,8 @@ excel_files:
         data_start_row: 10              # Dữ liệu chạy từ dòng 10
         target_table: "Fact_Inventory_Balance"
         transformer_class: "fact_inventory_balance"
-        truncate_before_load: false     # Không xóa lịch sử để tracking tồn kho qua các tháng
-        
-        # Điều kiện Rollback (Xóa đúng dữ liệu của kỳ lấy báo cáo trước khi nạp đè)
+        truncate_before_load: false     # ← giữ lịch sử các tháng
+
         delete_condition: "Snapshot_Date = '{max_date}'"
 
         field_mapping:
@@ -545,10 +565,10 @@ excel_files:
         data_start_row: 9               # Dữ liệu/Dòng gom nhóm bắt đầu từ dòng 9
         target_table: "Fact_CashFlow"
         transformer_class: "fact_cashflow"
-        truncate_before_load: false     # Giữ lịch sử
-        
-        # Điều kiện Rollback theo kỳ báo cáo
+        read_all_sheets: true 
+        truncate_before_load: false
         delete_condition: "Posting_Date >= '{min_date}' AND Posting_Date <= '{max_date}'"
+
 
         field_mapping:
           - source: "Ngày hạch toán"
@@ -610,7 +630,7 @@ excel_files:
         truncate_before_load: false     # Giữ lịch sử các tháng
         
         # Điều kiện Rollback theo tháng (Dựa vào cột Month)
-        delete_condition: "Month >= '{min_date}' AND Month <= '{max_date}'"
+        delete_condition: "date_trunc('month', Month) = date_trunc('month', '{max_date}'::date)"
 
         field_mapping:
           - source: "Mã số"
@@ -640,20 +660,18 @@ excel_files:
   # ---------------------------------------------------------------------------
   - file_id: "fact_business_plan"
     description: "Kế hoạch kinh doanh nội bộ (KQKD_pa1) - Dữ liệu Target/KPI"
-    type: "single_table"
+    type: "multi_table"
     source_pattern: "data/raw/noibo/Ke_hoach_kinh_doanh_minh_long_2026.xlsx"
     minio_prefix: "noibo/Ke_hoach_kinh_doanh_minh_long_2026"
     sheets:
-      - sheet_name: "KQKD_pa1"          # Gọi đích danh tên Sheet chứa dữ liệu
-        header_row: 5                   # Bỏ dòng 1-4, tiêu đề nằm ở dòng 5 (dòng chứa chữ T1...T12)
-        data_start_row: 6               # Dữ liệu chạy từ dòng 6
+      - sheet_name: "KQKD_pa1"
+        header_row: 5
+        data_start_row: 6
         target_table: "Fact_BusinessPlan"
         transformer_class: "fact_business_plan"
-        truncate_before_load: true      # Truncate để mỗi lần có file Plan mới thì nạp đè hoàn toàn
-        
-        # Bỏ trống field_mapping để Python tự do Melt (Unpivot) tất cả các cột T1->T12
+        truncate_before_load: true
+        restart_identity: true
         field_mapping: []
-
         metadata_columns:
           - name: "Indicator_Code"
             dtype: "varchar(100)"
@@ -667,6 +685,48 @@ excel_files:
             dtype: "timestamp"
           - name: "_batch_id"
             dtype: "varchar(100)"
+
+      - sheet_name: "CĐKT_pa1"     # ← THÊM SHEET NÀY
+        header_row: 1
+        data_start_row: 2
+        target_table: "Fact_BusinessPlan"
+        transformer_class: "fact_business_plan"
+        truncate_before_load: false  # ← false vì S1 đã truncate rồi, S2 append thêm
+        field_mapping: []
+        metadata_columns:
+          - name: "Indicator_Code"
+            dtype: "varchar(100)"
+          - name: "Month"
+            dtype: "date"
+          - name: "Target_Amount"
+            dtype: "numeric(18,2)"
+          - name: "_source_file"
+            dtype: "varchar(500)"
+          - name: "_loaded_at"
+            dtype: "timestamp"
+          - name: "_batch_id"
+            dtype: "varchar(100)"
+      - sheet_name: "Target_Vong_Quay"
+        header_row: 1
+        data_start_row: 2
+        target_table: "Fact_BusinessPlan"
+        transformer_class: "fact_business_plan"
+        truncate_before_load: false   # S1 đã truncate, S2/S3 append
+        field_mapping: []
+        metadata_columns:
+          - name: "Indicator_Code"
+            dtype: "varchar(100)"
+          - name: "Month"
+            dtype: "date"
+          - name: "Target_Amount"
+            dtype: "numeric(18,2)"
+          - name: "_source_file"
+            dtype: "varchar(500)"
+          - name: "_loaded_at"
+            dtype: "timestamp"
+          - name: "_batch_id"
+            dtype: "varchar(100)"
+
   # ---------------------------------------------------------------------------
   # 7. FACT BÁO CÁO TÌNH HÌNH TÀI CHÍNH (FACT_BALANCE_SHEET)
   # ---------------------------------------------------------------------------
@@ -683,9 +743,8 @@ excel_files:
         transformer_class: "fact_balance_sheet"
         truncate_before_load: false     # Giữ lịch sử báo cáo
         
-        # Xóa dữ liệu kỳ cũ trước khi nạp kỳ mới
-        delete_condition: "Reporting_Date = '{max_date}'" # Ngày chốt báo cáo thực tế trên file
-
+        # Điều kiện Rollback theo tháng (Dựa vào cột Month)
+        delete_condition: "date_trunc('month', Reporting_Date) = date_trunc('month', '{max_date}'::date)"
         field_mapping:
           - source: "Mã số"
             target: "Indicator_Code"
@@ -712,7 +771,7 @@ excel_files:
   - file_id: "fact_term_deposit"
     description: "Hợp đồng tiền gửi - Theo dõi lãi suất và kỳ hạn"
     type: "single_table"
-    source_pattern: "data/raw/noibo/Hop_dong_tien_gui*.xlsm"
+    source_pattern: "data/raw/noibo/Hop_dong_tien_gui*.xlsx"
     minio_prefix: "noibo/Hop_dong_tien_gui"
     sheets:
       - sheet_index: 0
@@ -721,6 +780,7 @@ excel_files:
         target_table: "Fact_TermDeposit"
         transformer_class: "fact_term_deposit"
         truncate_before_load: true
+        restart_identity: true
 
         field_mapping:
           # NOTE: STT được thêm vào để transformer dùng làm tín hiệu lọc bỏ
@@ -782,7 +842,10 @@ excel_files:
         data_start_row: 10
         target_table: "Fact_AccountsReceivable"
         transformer_class: "fact_accounts_receivable"
-        truncate_before_load: true
+        # Fact_AccountsReceivable
+        truncate_before_load: false
+        delete_condition: "Posting_Date >= '{min_date}' AND Posting_Date <= '{max_date}'"
+
 
         field_mapping:
           - source: "Ngày hạch toán"
@@ -849,6 +912,7 @@ excel_files:
         target_table: "Fact_AccountsPayable"
         transformer_class: "fact_accounts_payable"
         truncate_before_load: false
+        delete_condition: "Posting_Date >= '{min_date}' AND Posting_Date <= '{max_date}'"
 
         field_mapping:
           - source: "Mã nhà cung cấp"
@@ -915,6 +979,7 @@ excel_files:
         target_table: "Fact_CreditLimitSummary"
         transformer_class: "fact_credit_limit_summary"
         truncate_before_load: true
+        restart_identity: true
 
         field_mapping:
           - source: "STT"              # ← THÊM DÒNG NÀY (chỉ để transformer dùng nội bộ, sẽ tự xoá)
@@ -963,6 +1028,7 @@ excel_files:
         target_table: "Fact_Loan"
         transformer_class: "fact_loan"
         truncate_before_load: true
+        restart_identity: true
 
         field_mapping:
           - source: "NH"
@@ -1015,6 +1081,8 @@ excel_files:
         target_table: "Fact_Collateral"
         transformer_class: "fact_collateral"
         truncate_before_load: true
+        restart_identity: true
+
         field_mapping:
           - source: "Loại TS"
             target: "Collateral_Type"

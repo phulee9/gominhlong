@@ -36,10 +36,13 @@ class FactBalanceSheetTransformer(BaseTransformer):
         # 3. Định nghĩa hàm format và Map mã
         def format_b01_code(code):
             c = str(code).strip()
-            # Xử lý trường hợp Pandas đọc nhầm số thành float (ví dụ: 100 -> 100.0)
+            # Xử lý float nhầm: "100.0" → "100"
             if c.endswith('.0'):
                 c = c[:-2]
-            return f"B01-DN_{c}" if (c != "nan" and c != "" and c != "None") else None
+            # Chỉ chấp nhận mã 3 chữ số trở lên (loại "1", "2", "3"... số thứ tự cột)
+            if not re.match(r'^\d{3,}$', c):
+                return None
+            return f"B01-DN_{c}"
 
         df['Indicator_Code'] = df['Indicator_Code'].apply(format_b01_code)
         df = df.dropna(subset=['Indicator_Code'])

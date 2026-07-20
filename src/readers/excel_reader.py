@@ -68,7 +68,76 @@ class ExcelReader:
             )
             yield sheet_cfg, df
 
+    def _read_one_sheet_by(self, file_path: str, sheet_cfg: SheetConfig, sheet) -> pd.DataFrame:
+        if isinstance(sheet_cfg.header_row, list):
+            header_row_0 = [h - 1 for h in sheet_cfg.header_row]
+        else:
+            header_row_0 = sheet_cfg.header_row - 1
+
+        try:
+            df_raw = pd.read_excel(
+                file_path,
+                sheet_name=sheet,
+                header=header_row_0,
+                na_values=self.null_values,
+                dtype=str,
+                engine="openpyxl",
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Lỗi đọc sheet '{sheet}' trong file '{file_path}': {e}"
+            ) from e
+
+        if isinstance(df_raw.columns, pd.MultiIndex):
+            new_cols = []
+            for col in df_raw.columns:
+                top = str(col[0]).strip()
+                bottom = str(col[1]).strip()
+                if "Unnamed" in bottom or bottom == "" or bottom.lower() == "nan":
+                    new_cols.append(top)
+                else:
+                    new_cols.append(f"{top}_{bottom}")
+            df_raw.columns = new_cols
+
+        df_raw.columns = [str(c).strip() for c in df_raw.columns]
+        df = self._apply_field_mapping(df_raw, sheet_cfg)
+
+        if sheet_cfg.transformer_class:
+            transformer = get_transformer(sheet_cfg.transformer_class)
+            ctx = TransformContext(
+                file_path=file_path,
+                file_id=self.file_config.file_id,
+                sheet=sheet,
+                sheet_cfg=sheet_cfg,
+                file_config=self.file_config,
+                df_raw=df_raw,
+                lookup=self._lookup,
+            )
+            df = transformer.transform(df, ctx)
+
+        df = self._cast_dtypes(df, sheet_cfg)
+        df = df.dropna(how="all")
+        df = df.astype(object).where(pd.notnull(df), None)
+        return df
+
     def _read_one_sheet(self, file_path: str, sheet_cfg: SheetConfig) -> pd.DataFrame:
+            # Nếu có flag read_all_sheets → đọc hết sheet rồi concat
+        if getattr(sheet_cfg, "read_all_sheets", False):
+            xl = pd.ExcelFile(file_path, engine="openpyxl")
+            dfs = []
+            for sname in xl.sheet_names:
+                try:
+                    df_part = self._read_one_sheet_by(file_path, sheet_cfg, sname)
+                    dfs.append(df_part)
+                    logger.info(f"  Đọc sheet '{sname}': {len(df_part)} dòng")
+                except Exception as e:
+                    logger.warning(f"  Bỏ qua sheet '{sname}': {e}")
+            if not dfs:
+                raise RuntimeError(f"Không đọc được sheet nào từ {file_path}")
+            return pd.concat(dfs, ignore_index=True)
+
+
+
         # Xác định sheet
         sheet = sheet_cfg.sheet_name if sheet_cfg.sheet_name else sheet_cfg.sheet_index
 
@@ -210,6 +279,7 @@ class ExcelReader:
                         {"true": True, "True": True, "1": True,
                          "false": False, "False": False, "0": False}
                     )
+                    
 
             except Exception as e:
                 logger.warning(f"  Không thể cast cột '{col}' sang '{fm.dtype}': {e}")
