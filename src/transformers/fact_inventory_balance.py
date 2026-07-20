@@ -1,46 +1,98 @@
-"""Fact_Inventory_Balance: Tổng hợp tồn kho — quét Snapshot_Date từ dòng tiêu đề, lọc rác, đánh ID."""
+"""Fact_Inventory_Balance: Tổng hợp tồn kho — quét Snapshot_Date từ dòng tiêu đề,
+lọc rác, đánh ID.
+
+Cấu trúc file (đã xác nhận):
+  Row 6: 'Từ ngày DD/MM/YYYY đến ngày DD/MM/YYYY'  ← lấy ngày ĐẾN NGÀY làm Snapshot_Date
+  Row 8-9: header (multi-row)
+  Row 10+: dữ liệu
+
+Fix: dùng openpyxl đọc thẳng thay vì pandas để tránh lệch cột/dòng khi quét tiêu đề.
+"""
 import logging
 import re
+from datetime import date
 
+import openpyxl
 import pandas as pd
 
 from .base import BaseTransformer, TransformContext
 
 logger = logging.getLogger(__name__)
 
+# Regex bắt ngày — 2 format MISA:
+#   Format 1: "Từ ngày DD/MM/YYYY đến ngày DD/MM/YYYY" → lấy ngày đến ngày
+#   Format 2: "Tháng M năm YYYY"                       → lấy ngày cuối tháng
+_PAT_DEN_NGAY = re.compile(r'đến ngày\s+(\d{1,2}/\d{1,2}/\d{4})', re.IGNORECASE)
+_PAT_THANG    = re.compile(r'tháng\s+(\d{1,2})\s+năm\s+(\d{4})', re.IGNORECASE)
+
+
+def _last_day_of_month(year: int, month: int) -> date:
+    """Trả về ngày cuối tháng."""
+    import calendar
+    return date(year, month, calendar.monthrange(year, month)[1])
+
+
+def _extract_snapshot_date(file_path: str, sheet) -> date:
+    """Đọc 10 dòng đầu bằng openpyxl, quét tìm Snapshot_Date theo 2 format."""
+    try:
+        wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
+        ws = wb[sheet] if isinstance(sheet, str) else list(wb.worksheets)[sheet]
+
+        for row in ws.iter_rows(max_row=10, values_only=True):
+            for cell in row:
+                if cell is None:
+                    continue
+                cell_str = str(cell).strip()
+
+                # Format 1: "đến ngày DD/MM/YYYY" → lấy ngày đó
+                m = _PAT_DEN_NGAY.search(cell_str)
+                if m:
+                    try:
+                        d = pd.to_datetime(m.group(1), format="%d/%m/%Y").date()
+                        logger.info(f"[fact_inventory_balance] Snapshot_Date = {d} (format: đến ngày)")
+                        wb.close()
+                        return d
+                    except ValueError:
+                        pass
+
+                # Format 2: "Tháng M năm YYYY" → lấy ngày cuối tháng đó
+                m = _PAT_THANG.search(cell_str)
+                if m:
+                    try:
+                        month, year = int(m.group(1)), int(m.group(2))
+                        d = _last_day_of_month(year, month)
+                        logger.info(f"[fact_inventory_balance] Snapshot_Date = {d} (format: Tháng {month} năm {year})")
+                        wb.close()
+                        return d
+                    except (ValueError, OverflowError):
+                        pass
+
+        wb.close()
+        logger.warning(
+            "[fact_inventory_balance] Không tìm thấy ngày trong 10 dòng đầu "
+            "— dùng ngày hôm nay làm fallback."
+        )
+    except Exception as e:
+        logger.warning(f"[fact_inventory_balance] Lỗi khi quét Snapshot_Date: {e}")
+    return date.today()
+
 
 class FactInventoryBalanceTransformer(BaseTransformer):
     def transform(self, df: pd.DataFrame, ctx: TransformContext) -> pd.DataFrame:
-        # 1. Quét tìm Snapshot_Date từ các dòng tiêu đề gốc (trước khi bị pandas cắt đi)
-        snapshot_date = None
-        try:
-            # Đọc tạm 10 dòng đầu tiên để phân tích text
-            df_head_temp = pd.read_excel(
-                ctx.file_path, sheet_name=ctx.sheet, nrows=10, header=None, engine="openpyxl"
-            )
-            for _, r in df_head_temp.iterrows():
-                for cell in r.values:
-                    cell_str = str(cell).lower()
-                    # Tìm chuỗi có chứa cụm 'đến ngày dd/mm/yyyy'
-                    if "đến ngày" in cell_str:
-                        match = re.search(r'đến ngày\s+(\d{1,2}/\d{1,2}/\d{4})', cell_str)
-                        if match:
-                            snapshot_date = match.group(1)
-                            break
-                if snapshot_date:
-                    break
-        except Exception as e:
-            logger.warning(f"Lỗi khi quét tìm Snapshot_Date: {e}")
 
-        # Gán ngày tháng vào DataFrame
-        if snapshot_date:
-            df['Snapshot_Date'] = pd.to_datetime(snapshot_date, format="%d/%m/%Y").date()
-        else:
-            logger.warning("Không tìm thấy chuỗi 'đến ngày dd/mm/yyyy' trong file!")
-            df['Snapshot_Date'] = None
+        # 1. Quét Snapshot_Date từ tiêu đề file (dùng openpyxl, không dùng pandas)
+        snapshot_date = _extract_snapshot_date(ctx.file_path, ctx.sheet)
+        df['Snapshot_Date'] = snapshot_date
 
-        # 2. Làm sạch dòng rác và đánh ID
+        # 2. Lọc dòng rác (thiếu Warehouse_Code hoặc Product_Code)
         df = df.dropna(subset=['Warehouse_Code', 'Product_Code'])
+        df['Warehouse_Code'] = df['Warehouse_Code'].astype(str).str.strip()
+        df['Product_Code']   = df['Product_Code'].astype(str).str.strip()
+        df = df[df['Warehouse_Code'] != '']
+        df = df[df['Product_Code'] != '']
+
+        # 3. Đánh ID tự tăng
         df = df.reset_index(drop=True)
         df['ID'] = df.index + 1
+
         return df

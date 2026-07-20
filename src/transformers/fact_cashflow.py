@@ -33,4 +33,5 @@ class FactCashFlowTransformer(BaseTransformer):
         # 4. Khởi tạo ID tự tăng
         df = df.reset_index(drop=True)
         df['ID'] = df.index + 1
+        
         return df

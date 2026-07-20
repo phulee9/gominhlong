@@ -13,7 +13,7 @@ cần entry ở đây — ExcelReader bỏ qua bước transform, dùng df sau f
 from typing import Dict, Type
 
 from .base import BaseTransformer, TransformContext
-
+from .dim_bank import DimBankTransformer
 from .dim_partner import DimPartnerTransformer
 from .dim_account import DimAccountTransformer
 from .dim_account_number import DimAccountNumberTransformer
@@ -52,6 +52,7 @@ _REGISTRY: Dict[str, Type[BaseTransformer]] = {
     "fact_credit_limit_summary": FactCreditLimitSummaryTransformer,
     "fact_loan": FactLoanTransformer,
     "fact_collateral": FactCollateralTransformer,
+    "dim_bank": DimBankTransformer,
 }
 
 

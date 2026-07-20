@@ -26,4 +26,6 @@ class FactLoanTransformer(BaseTransformer):
         # 3. ID tự tăng
         df = df.reset_index(drop=True)
         df['ID'] = df.index + 1
+
+        df["Bank_Code"] = df["Bank_Code"].str.upper()
         return df

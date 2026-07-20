@@ -27,12 +27,24 @@ except ImportError:
 
 from airflow.utils.trigger_rule import TriggerRule
 
+try:
+    from airflow.sdk import Variable
+except ImportError:
+    from airflow.models import Variable
+
 PROJECT_ROOT = "/mnt/c/excel-pipeline"
 CONFIG_PATH  = f"{PROJECT_ROOT}/config/pipeline_config.yaml"
 LANDING_DIR  = "data/raw"
 
 # File_id nào cần chạy trước các file khác (Dim trước Fact)
 PRIORITY_FILE_IDS = {"dim_bank"}
+
+# 5 file_id thuộc 3 file nội bộ Google Sheets → không dùng bookmark MISA,
+# fallback ngày upload (date.today()) trong upload_task.py
+INTERNAL_GG_SHEET_FILE_IDS = {
+    "fact_loan", "fact_collateral", "fact_credit_limit_summary", "fact_term_deposit",
+    "fact_business_plan",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +78,14 @@ UI_PARAMS = {
             "Chọn báo cáo muốn NẠP ÉP (Force Run). "
             "Để 'Auto' hệ thống tự quét file thay đổi (so MD5)."
         ),
-    )
+    ),
+    "skip_load": Param(
+        default=False,
+        type="boolean",
+        title="🧪 Test mode: Bỏ qua bước Load vào Database",
+        description="Bật = chỉ chạy detect + upload MinIO, KHÔNG ghi vào PostgreSQL. "
+                    "Dùng khi muốn test luồng mà không đụng dữ liệu.",
+    ),
 }
 
 # Map label UI → danh sách file_id
@@ -120,6 +139,25 @@ def _is_force_run(params: dict, conf: dict) -> bool:
     report_name = params.get("report_name", AUTO_CHOICE)
     return report_name != AUTO_CHOICE or bool(conf.get("force_upload", False))
 
+def _resolve_file_date(file_id: str):
+    """
+    Báo cáo MISA → lấy ngày từ bookmark misa_last_to_date (Variable do
+    misa_download_dag set sau mỗi lần chạy).
+    File nội bộ Google Sheets → trả None, để upload_task tự fallback
+    ngày hôm nay.
+    """
+    from datetime import datetime
+    if file_id in INTERNAL_GG_SHEET_FILE_IDS:
+        return None
+    try:
+        bookmark = Variable.get("misa_last_to_date")
+        return datetime.strptime(bookmark, "%d/%m/%Y").date()
+    except Exception:
+        logger.warning(
+            "[upload] %s: không lấy được bookmark misa_last_to_date, fallback ngày hôm nay.",
+            file_id,
+        )
+        return None
 
 # =============================================================================
 # DAG
@@ -230,11 +268,12 @@ def excel_pipeline_dag():
             config=config,
             batch_id=batch_id,
             force_upload=force,
+            file_date=_resolve_file_date(file_info["file_id"]),   # ← THÊM DÒNG NÀY
         )
 
         logger.info(
-            "[upload] %s | batch=%s | skipped=%s | path=%s",
-            result.file_id, result.batch_id, result.skipped, result.minio_path,
+            "[upload] %s | batch=%s | skipped=%s | path=%s | file_date=%s",
+            result.file_id, result.batch_id, result.skipped, result.minio_path, result.file_date,
         )
         return {
             "file_id":    result.file_id,
@@ -242,7 +281,6 @@ def excel_pipeline_dag():
             "minio_path": result.minio_path,
             "skipped":    result.skipped,
         }
-
     # ─────────────────────────────────────────────────────────────────────
     # TASK 3: Load vào PostgreSQL
     # Fix 4: trigger_rule=ALL_DONE agar task này không bị skip cascade
@@ -262,6 +300,15 @@ def excel_pipeline_dag():
         dag_run = context.get("dag_run")
         conf    = (dag_run.conf if dag_run else None) or {}
         force   = _is_force_run(params, conf) or bool(conf.get("force_load", False))
+
+        # ── THÊM: test mode — bỏ qua hoàn toàn bước load vào DB ──────────────
+        if params.get("skip_load", False):
+            logger.info(
+                "[load] %s: 🧪 Test mode (skip_load=True) → bỏ qua load vào DB.",
+                upload_result["file_id"],
+            )
+            return {"file_id": upload_result["file_id"], "status": "skipped_test_mode", "rows": 0}
+        # ───────────────────────────────────────────────────────────────────────
 
         # Skip nếu upload không đổi và không force
         if upload_result["skipped"] and not force:
@@ -313,8 +360,8 @@ def excel_pipeline_dag():
         all_results = p + n
 
         success    = [r for r in all_results if r.get("status") == "success"]
-        skipped    = [r for r in all_results if r.get("status") == "skipped"]
-        failed     = [r for r in all_results if r.get("status") not in ("success", "skipped")]
+        skipped    = [r for r in all_results if r.get("status") in ("skipped", "skipped_test_mode")]
+        failed     = [r for r in all_results if r.get("status") not in ("success", "skipped", "skipped_test_mode")]
         total_rows = sum(r.get("rows", 0) for r in success)
 
         logger.info("=" * 60)

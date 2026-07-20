@@ -34,28 +34,15 @@ class UploadResult:
     md5: str
     skipped: bool       # True = file không đổi, bỏ qua upload
     file_date: date
-
-
+    
 def run(
     file_path: str,
     file_id: str,
     config: PipelineConfig,
     batch_id: str,
     force_upload: bool = False,
+    file_date: date | None = None,   # ← THÊM
 ) -> UploadResult:
-    """
-    Upload một file Excel lên MinIO nếu MD5 thay đổi.
-
-    Args:
-        file_path:    Đường dẫn file Excel local
-        file_id:      ID trong config YAML
-        config:       PipelineConfig đã parse
-        batch_id:     batch_id duy nhất do orchestrator tạo
-        force_upload: Bỏ qua MD5 check, luôn upload
-
-    Returns:
-        UploadResult chứa minio_path và batch_id để Task 2 dùng.
-    """
     file_cfg: ExcelFileConfig = config.get_file_config(file_id)
     if not file_cfg:
         raise ValueError(f"Không tìm thấy file_id='{file_id}'")
@@ -68,9 +55,8 @@ def run(
     minio = MinioClient(config.connections.minio)
 
     local_md5 = _md5_file(file_path)
-    today = date.today()
+    resolved_file_date = file_date or date.today()   # ← THAY today = date.today()
 
-    # Kiểm tra MD5
     if not force_upload:
         latest = registry.get_latest(file_id)
         if latest and latest["md5"] == local_md5:
@@ -86,36 +72,32 @@ def run(
                 file_date=latest["file_date"],
             )
 
-    # Upload lên MinIO
     logger.info(f"[upload_task] {file_id}: Uploading → MinIO (batch={batch_id})")
     minio_path = minio.upload_raw_excel(
         local_path=file_path,
         minio_prefix=file_cfg.minio_prefix,
         file_id=file_id,
-  
     )
 
-    # Ghi FileRegistry
     registry.insert(
         file_id=file_id,
         batch_id=batch_id,
         minio_path=minio_path,
         md5=local_md5,
-        file_date=today,
+        file_date=resolved_file_date,   # ← THAY today
         status="uploaded",
     )
     logger.info(f"[upload_task] {file_id}: ✓ {minio_path}")
 
-    # Cleanup bản cũ, chỉ giữ 12 bản gần nhất (3 tháng)
     _cleanup_old_versions(registry=registry, minio=minio, file_id=file_id)
-    
+
     return UploadResult(
         file_id=file_id,
         batch_id=batch_id,
         minio_path=minio_path,
         md5=local_md5,
         skipped=False,
-        file_date=today,
+        file_date=resolved_file_date,   # ← THAY today
     )
 
 
