@@ -1,11 +1,7 @@
 """Fact_BalanceSheet: Báo cáo tình hình tài chính B01-DN — quét Reporting_Date, chuẩn hoá mã chỉ tiêu."""
 import re
-
 import pandas as pd
-
 from .base import BaseTransformer, TransformContext
-
-
 class FactBalanceSheetTransformer(BaseTransformer):
     def transform(self, df: pd.DataFrame, ctx: TransformContext) -> pd.DataFrame:
         # 1. Quét tìm ngày tháng (Đã confirm chạy được)
@@ -29,29 +25,25 @@ class FactBalanceSheetTransformer(BaseTransformer):
                     break
         except Exception:
             pass
-
         # 2. Xử lý làm sạch cột (Xóa Unnamed)
         df = df.loc[:, ~df.columns.str.contains('^Unnamed', na=False)]
-
         # 3. Định nghĩa hàm format và Map mã
         def format_b01_code(code):
             c = str(code).strip()
             # Xử lý float nhầm: "100.0" → "100"
             if c.endswith('.0'):
                 c = c[:-2]
-            # Chỉ chấp nhận mã 3 chữ số trở lên (loại "1", "2", "3"... số thứ tự cột)
-            if not re.match(r'^\d{3,}$', c):
+            # Chấp nhận mã 3 chữ số trở lên, CÓ THỂ kèm 1 chữ cái ở cuối
+            # (vd "411", "421a", "421b" — các chỉ tiêu con của BCTC).
+            # Loại "1", "2", "3"... (số thứ tự cột, không phải mã chỉ tiêu).
+            if not re.match(r'^\d{3,}[a-zA-Z]?$', c):
                 return None
             return f"B01-DN_{c}"
-
         df['Indicator_Code'] = df['Indicator_Code'].apply(format_b01_code)
         df = df.dropna(subset=['Indicator_Code'])
-
         # 4. Gán Reporting_Date (Gán sau cùng để đảm bảo tồn tại trong DataFrame)
         df['Reporting_Date'] = report_date
-
         # 5. Ép kiểu dữ liệu số
         for col in ['Beginning_Balance', 'Ending_Balance']:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-
         return df

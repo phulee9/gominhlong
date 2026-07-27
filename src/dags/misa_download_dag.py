@@ -5,7 +5,7 @@ import subprocess
 import sys                    # ← THÊM
 from pathlib import Path      # ← THÊM
 from datetime import datetime, timedelta
-
+from pendulum import timezone
 import requests
 
 # ── THÊM: đảm bảo project root trong sys.path ─────────────────────────────
@@ -83,7 +83,7 @@ def parse_date_param(s: str) -> str:
     default_args=default_args,
     description="DAG tải báo cáo MISA | Chưa có thông tin lần chạy gần nhất",
     schedule="0 20 * * 4",
-    start_date=datetime(2026, 1, 1),
+    start_date=datetime(2026, 1, 1, tzinfo=timezone("Asia/Ho_Chi_Minh")),
     max_active_runs=1,
     params={
         "use_bookmark": Param(
@@ -147,15 +147,18 @@ def misa_download_dag():
         except KeyError:
             bookmark = None
 
-        auto_from = bookmark or datetime(today.year, 1, 1).strftime("%d/%m/%Y")
         auto_to = today.strftime("%d/%m/%Y")
-
         use_bookmark = params.get("use_bookmark", True)
 
         if use_bookmark:
-            from_date, to_date = auto_from, auto_to
+            # [NEW LOGIC] Khoảng ngày thực tế giờ do report_download.py tự
+            # tính theo từng nhóm report (tháng hiện tại / năm hiện tại) —
+            # from_date/to_date ở đây chỉ mang tính tham chiếu/log, KHÔNG
+            # còn quyết định khoảng ngày tải khi bookmark BẬT.
+            from_date = datetime(today.year, 1, 1).strftime("%d/%m/%Y")
+            to_date = auto_to
         else:
-            from_date = parse_date_param(params.get("from_date", auto_from))
+            from_date = parse_date_param(params.get("from_date", datetime(today.year, 1, 1).strftime("%d/%m/%Y")))
             to_date = parse_date_param(params.get("to_date", auto_to))
 
         if datetime.strptime(from_date, "%d/%m/%Y") > datetime.strptime(to_date, "%d/%m/%Y"):
@@ -169,6 +172,10 @@ def misa_download_dag():
         logger.info("Đến ngày: %s", to_date)
         logger.info("Bookmark: %s", bookmark or "chưa có — dùng đầu năm tài chính")
         logger.info("Chế độ  : %s", "Tự động (bookmark)" if use_bookmark else "Thủ công (nhập tay)")
+        if use_bookmark:
+            logger.info("LƯU Ý: khi bookmark BẬT, script tự quyết khoảng ngày theo từng nhóm "
+                        "report (B01/B02/tồn kho = đầu tháng→nay, còn lại = đầu năm→nay); "
+                        "from/to ở trên chỉ mang tính tham chiếu.")
 
         PARAM_TO_CODE: dict[str, str] = {
             "tai_khach_hang":   "CUSTOMER_LIST",

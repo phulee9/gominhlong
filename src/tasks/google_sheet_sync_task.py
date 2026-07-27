@@ -14,9 +14,7 @@ import os
 from pathlib import Path
 
 import requests
-import google.oauth2.service_account as service_account
-import google.auth.transport.requests as _gtr
-GRequest = _gtr.Request
+
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +48,12 @@ SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
 
 def _get_credentials():
-    """Lấy credentials từ Service Account JSON."""
+    from google.oauth2 import service_account
+    from google.auth.transport.requests import Request
+
     creds = service_account.Credentials.from_service_account_file(
         CREDENTIALS_PATH, scopes=SCOPES
     )
-    # Refresh token nếu cần
     if not creds.valid:
         creds.refresh(Request())
     return creds
@@ -66,6 +65,7 @@ def _export_sheet_as_xlsx(sheet_id: str, creds) -> bytes:
     → dùng endpoint 'files.get?alt=media' để tải nguyên file,
       KHÔNG dùng '/export' (chỉ áp dụng cho Google Docs/Sheets native).
     """
+    from google.auth.transport.requests import Request 
     url = f"https://www.googleapis.com/drive/v3/files/{sheet_id}"
     params = {"alt": "media"}
 
@@ -92,6 +92,11 @@ def run(**context) -> dict:
     Tải cả 3 Google Sheet về local, ghi đè file cũ.
     Trả về dict tóm tắt kết quả.
     """
+
+    from google.oauth2 import service_account
+    from google.auth.transport.requests import Request
+    import requests as _req
+
     import sys
     # Đảm bảo PROJECT_ROOT trong sys.path (giống upload_one/load_one)
     project_root = "/mnt/c/excel-pipeline"

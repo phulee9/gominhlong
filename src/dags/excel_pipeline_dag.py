@@ -13,10 +13,11 @@ FIXES so với phiên bản cũ:
 from __future__ import annotations
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Any
-
+import re
+import calendar
 # ─── Fix 1: Import từ airflow.sdk (Airflow 3.x) ───────────────────────────
 try:
     from airflow.sdk import dag, task, Param  # Airflow 3.x
@@ -139,16 +140,26 @@ def _is_force_run(params: dict, conf: dict) -> bool:
     report_name = params.get("report_name", AUTO_CHOICE)
     return report_name != AUTO_CHOICE or bool(conf.get("force_upload", False))
 
-def _resolve_file_date(file_id: str):
-    """
-    Báo cáo MISA → lấy ngày từ bookmark misa_last_to_date (Variable do
-    misa_download_dag set sau mỗi lần chạy).
-    File nội bộ Google Sheets → trả None, để upload_task tự fallback
-    ngày hôm nay.
-    """
-    from datetime import datetime
+def _resolve_file_date(file_id: str, file_path: str | None = None):
+    from datetime import datetime, date
+    import calendar
+
     if file_id in INTERNAL_GG_SHEET_FILE_IDS:
         return None
+
+    if file_path:
+        m = re.search(r"_(\d{4})-(\d{2})\.xlsx$", Path(file_path).name)
+        if m:
+            y, mo = int(m.group(1)), int(m.group(2))
+            today = date.today()
+            if (y, mo) == (today.year, today.month):
+                # Tháng đang chạy dở -> dữ liệu chỉ có tới hôm nay
+                return today
+            else:
+                # Tháng đã qua -> chắc chắn đã chốt đủ tới ngày cuối tháng
+                last_day = calendar.monthrange(y, mo)[1]
+                return date(y, mo, last_day)
+
     try:
         bookmark = Variable.get("misa_last_to_date")
         return datetime.strptime(bookmark, "%d/%m/%Y").date()
@@ -158,7 +169,6 @@ def _resolve_file_date(file_id: str):
             file_id,
         )
         return None
-
 # =============================================================================
 # DAG
 # =============================================================================
@@ -268,7 +278,7 @@ def excel_pipeline_dag():
             config=config,
             batch_id=batch_id,
             force_upload=force,
-            file_date=_resolve_file_date(file_info["file_id"]),   # ← THÊM DÒNG NÀY
+            file_date=_resolve_file_date(file_info["file_id"], file_info["file_path"]),  # ← thêm file_path
         )
 
         logger.info(
@@ -346,6 +356,42 @@ def excel_pipeline_dag():
             "rows":    result.total_rows,
         }
 
+    @task(trigger_rule=TriggerRule.ALL_DONE)
+    def cleanup_prev_month_files(load_results: dict) -> None:
+        """[CLEANUP] Chỉ xóa file tháng trước NẾU ETL không có lỗi
+        (failed_count == 0) — tránh xóa file gốc khi load thất bại,
+        mất cơ hội retry ở lần chạy sau."""
+        if load_results.get("failed_count", 0) > 0:
+            logger.warning(
+                "[cleanup] Có %d file load lỗi — KHÔNG xóa file tháng trước, "
+                "giữ lại để retry ở lần chạy kế tiếp.",
+                load_results["failed_count"],
+            )
+            return
+
+        import re
+        from pathlib import Path
+        from datetime import date
+
+        MISA_RAW_DIR = Path("/mnt/c/excel-pipeline/data/raw/misa")
+        today = date.today()
+        cur_suffix = f"_{today.year:04d}-{today.month:02d}.xlsx"
+
+        monthly_prefixes = [
+            "B01_DN_Bao_cao_tinh_hinh_tai_chinh",
+            "B02_DN_Bao_cao_ket_qua_hoat_dong_kinh_doanh",
+            "Tong_hop_ton_kho",
+        ]
+
+        for f in MISA_RAW_DIR.glob("*_????-??.xlsx"):
+            for prefix in monthly_prefixes:
+                if f.name.startswith(prefix) and not f.name.endswith(cur_suffix):
+                    try:
+                        f.unlink()
+                        logger.info(f"[cleanup] Đã xóa file tháng trước: {f.name}")
+                    except Exception as e:
+                        logger.warning(f"[cleanup] Không xóa được {f.name}: {e}")
+                        
     # ─────────────────────────────────────────────────────────────────────
     # TASK 4 (optional): Tổng kết và ghi log cuối DAG run
     # ─────────────────────────────────────────────────────────────────────
@@ -412,10 +458,14 @@ def excel_pipeline_dag():
     loaded_priority >> uploaded_normal
 
     # Tổng kết
-    summarize(
+    result = summarize(
         priority_results=loaded_priority,
         normal_results=loaded_normal,
     )
+
+    # Dọn file tháng trước SAU KHI ETL xong (chỉ giữ file tháng hiện tại
+    # cho 3 báo cáo B01_DN/B02_DN/INV_SUMMARY_V2 trên đĩa)
+    cleanup_prev_month_files(load_results=result)
 
 
 excel_pipeline_dag()

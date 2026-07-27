@@ -391,12 +391,11 @@ excel_files:
         target_table: "Fact_InventoryOutward"
         transformer_class: "fact_inventory_outward"
         
-        # Bảng Fact KHÔNG TRUNCATE để dùng cơ chế Delete - Insert (Rollback theo kỳ)
         truncate_before_load: false     
         
-        # ĐIỀU KIỆN ROLLBACK (Ví dụ: Xóa sạch dữ liệu tháng 6/2026 trước khi nạp lại file tháng 6)
-        # Khi bạn nạp file của tháng khác, hãy sửa lại ngày ở điều kiện này cho khớp.
-        delete_condition: "Posting_Date >= '{min_date}' AND Posting_Date <= '{max_date}'"
+        # [NEW] Xóa theo NĂM (không phải theo khoảng min/max nữa) — giữ được
+        # lịch sử các năm trước, chỉ làm mới đúng năm đang tải.
+        delete_condition: "date_trunc('year', Posting_Date) = date_trunc('year', '{max_date}'::date)"
 
         field_mapping:
           - source: "Ngày hạch toán"
@@ -457,12 +456,9 @@ excel_files:
         target_table: "Fact_InventoryInward"
         transformer_class: "fact_inventory_inward"
         
-        # KHÔNG TRUNCATE để giữ lịch sử, dùng cơ chế Rollback theo kỳ
         truncate_before_load: false
         
-        # Điều kiện xóa dữ liệu cũ (Rollback) trước khi nạp lại
-        # Lưu ý: Cập nhật điều kiện này theo đúng tháng của file bạn định nạp
-        delete_condition: "Posting_Date >= '{min_date}' AND Posting_Date <= '{max_date}'"
+        delete_condition: "date_trunc('year', Posting_Date) = date_trunc('year', '{max_date}'::date)"
 
         field_mapping:
           - source: "Ngày hạch toán"
@@ -524,7 +520,7 @@ excel_files:
         transformer_class: "fact_inventory_balance"
         truncate_before_load: false     # ← giữ lịch sử các tháng
 
-        delete_condition: "Snapshot_Date = '{max_date}'"
+        delete_condition: "date_trunc('month', Snapshot_Date) = date_trunc('month', '{max_date}'::date)"
 
         field_mapping:
           - source: "Mã kho"
@@ -567,7 +563,7 @@ excel_files:
         transformer_class: "fact_cashflow"
         read_all_sheets: true 
         truncate_before_load: false
-        delete_condition: "Posting_Date >= '{min_date}' AND Posting_Date <= '{max_date}'"
+        delete_condition: "date_trunc('year', Posting_Date) = date_trunc('year', '{max_date}'::date)"
 
 
         field_mapping:
@@ -628,10 +624,9 @@ excel_files:
         target_table: "Fact_IncomeStatement"
         transformer_class: "fact_income_statement"
         truncate_before_load: false     # Giữ lịch sử các tháng
-        
+
         # Điều kiện Rollback theo tháng (Dựa vào cột Month)
         delete_condition: "date_trunc('month', Month) = date_trunc('month', '{max_date}'::date)"
-
         field_mapping:
           - source: "Mã số"
             target: "Indicator_Code"
@@ -642,12 +637,12 @@ excel_files:
           - source: "Kỳ này"
             target: "Current_Period_Amount"
             dtype: "numeric(18,2)"
-
+          - source: "Kỳ trước"          # Load 1:1 cột kỳ trước (thay YTD_Amount — issue DA)
+            target: "Previous_Period_Amount"
+            dtype: "numeric(18,2)"
         metadata_columns:
           - name: "Month"               # Lấy tự động bằng Regex từ tiêu đề
             dtype: "date"
-          - name: "YTD_Amount"          # Giá trị lũy kế từ đầu năm
-            dtype: "numeric(18,2)"
           - name: "_source_file"
             dtype: "varchar(500)"
           - name: "_loaded_at"
@@ -844,7 +839,7 @@ excel_files:
         transformer_class: "fact_accounts_receivable"
         # Fact_AccountsReceivable
         truncate_before_load: false
-        delete_condition: "Posting_Date >= '{min_date}' AND Posting_Date <= '{max_date}'"
+        delete_condition: "date_trunc('year', Posting_Date) = date_trunc('year', '{max_date}'::date)"
 
 
         field_mapping:
@@ -912,12 +907,12 @@ excel_files:
         target_table: "Fact_AccountsPayable"
         transformer_class: "fact_accounts_payable"
         truncate_before_load: false
-        delete_condition: "Posting_Date >= '{min_date}' AND Posting_Date <= '{max_date}'"
+        delete_condition: "date_trunc('year', Posting_Date) = date_trunc('year', '{max_date}'::date)"
 
         field_mapping:
           - source: "Mã nhà cung cấp"
             target: "Partner_Code"
-            dtype: "varchar(100)"
+            dtype: "varchar(300)"
           - source: "Ngày hạch toán"
             target: "Posting_Date"
             dtype: "date"
@@ -932,7 +927,7 @@ excel_files:
             dtype: "date"
           - source: "Diễn giải"
             target: "Description"
-            dtype: "varchar(500)"
+            dtype: "text"
           - source: "TK đối ứng"
             target: "Reciprocal_Account"
             dtype: "varchar(50)"

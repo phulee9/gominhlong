@@ -1,13 +1,36 @@
-"""Fact_IncomeStatement: Báo cáo KQKD B02-DN — quét Month từ tiêu đề, chuẩn hoá mã chỉ tiêu."""
+"""Fact_IncomeStatement: Báo cáo KQKD B02-DN — quét Month từ tiêu đề, chuẩn hoá mã chỉ tiêu.
+
+THAY ĐỔI THEO ISSUE DA (lũy kế):
+  Báo cáo được export THEO TỪNG THÁNG (T1, T2, T3... mỗi tháng 1 file) nên
+  1 file KHÔNG đủ dữ liệu để tự tính lũy kế. Bản cũ gán
+  YTD_Amount = Current_Period_Amount là SAI.
+  => BỎ cột YTD_Amount. THAY bằng Previous_Period_Amount: load 1:1 từ cột
+  "Kỳ trước" có sẵn trong báo cáo (B02 luôn có cặp cột Kỳ này / Kỳ trước,
+  tương tự B01 có Số cuối kỳ / Số đầu kỳ).
+  Lũy kế nếu BI cần thì tính ở tầng BI bằng SUM(Current_Period_Amount)
+  các tháng <= tháng đang xem — không tính ở ETL.
+
+  YÊU CẦU KÈM THEO (ngoài file này):
+  1. pipeline_config.yaml — field_mapping phải map cột "Kỳ trước" của file
+     nguồn -> target "Previous_Period_Amount" (transformer sẽ raise lỗi rõ
+     ràng nếu thiếu, không im lặng bỏ qua).
+  2. DB: ALTER TABLE Fact_IncomeStatement — bỏ/ngưng dùng YTD_Amount,
+     thêm Previous_Period_Amount DECIMAL. Report/measure BI nào đang đọc
+     YTD_Amount phải sửa theo.
+"""
 import calendar
 import logging
 import re
+
 import pandas as pd
+
 from .base import BaseTransformer, TransformContext
+
 logger = logging.getLogger(__name__)
 
 
 class FactIncomeStatementTransformer(BaseTransformer):
+
     def transform(self, df: pd.DataFrame, ctx: TransformContext) -> pd.DataFrame:
         # 1. Quét tìm ngày kỳ báo cáo từ dòng tiêu đề.
         #    MISA có thể xuất 2 dạng khác nhau tùy khoảng lọc khi export:
@@ -29,9 +52,7 @@ class FactIncomeStatementTransformer(BaseTransformer):
                 for cell in r.values:
                     cell_str = str(cell)
                     cell_lower = cell_str.lower()
-
-                    # (b) Pattern CŨ: "...đến ngày dd/mm/yyyy" — ngày cụ thể
-                    #     => dùng ĐÚNG ngày này làm Month, không quy về đâu cả
+                    # (b) "...đến ngày dd/mm/yyyy" — ngày cụ thể
                     if report_date is None and (
                         "kỳ kế toán" in cell_lower or "từ ngày" in cell_lower
                     ):
@@ -44,9 +65,7 @@ class FactIncomeStatementTransformer(BaseTransformer):
                             ).date()
                             matched_pattern = "partial-period (dùng đúng to_date)"
                             break
-
-                    # (a) Pattern MỚI: "Kỳ kế toán tháng X năm Y" — chỉ tháng/năm
-                    #     => quy về NGÀY CUỐI của tháng đó (không phải ngày 01)
+                    # (a) "Kỳ kế toán tháng X năm Y" — quy về ngày cuối tháng
                     if report_date is None and "kỳ kế toán" in cell_lower:
                         match = re.search(
                             r'tháng\s+(\d{1,2})\s+năm\s+(\d{4})',
@@ -61,7 +80,6 @@ class FactIncomeStatementTransformer(BaseTransformer):
                             ).date()
                             matched_pattern = f"full-month (quy về ngày cuối tháng: {last_day})"
                             break
-
                 if report_date:
                     break
         except Exception as e:
@@ -90,7 +108,26 @@ class FactIncomeStatementTransformer(BaseTransformer):
 
         df['Indicator_Code'] = df['Indicator_Code'].apply(format_b02_code)
 
-        # 4. Xử lý giá trị Lũy kế (YTD)
-        df['YTD_Amount'] = df['Current_Period_Amount']
+        # 4. Kỳ trước: load 1:1 từ cột "Kỳ trước" của báo cáo (issue DA).
+        #    KHÔNG tự tính lũy kế ở ETL — file export theo từng tháng, 1 file
+        #    không đủ dữ liệu; lũy kế tính ở tầng BI từ Current_Period_Amount.
+        if 'Previous_Period_Amount' not in df.columns:
+            raise ValueError(
+                "fact_income_statement: thiếu cột 'Previous_Period_Amount'. "
+                "Phải bổ sung field_mapping trong pipeline_config.yaml: "
+                "cột 'Kỳ trước' của báo cáo B02 -> 'Previous_Period_Amount' "
+                "(load 1:1, thay thế cột YTD_Amount cũ theo issue DA)."
+            )
 
+        # 5. Ép kiểu số cho 2 cột giá trị
+        for col in ('Current_Period_Amount', 'Previous_Period_Amount'):
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # Đảm bảo không còn YTD_Amount lọt xuống DB (nếu config cũ vẫn map)
+        df = df.drop(columns=['YTD_Amount'], errors='ignore')
+
+        logger.info(
+            f"[B02][OUT] {len(df)} dòng | Month={report_date} | "
+            f"Previous_Period_Amount null: {int(df['Previous_Period_Amount'].isna().sum())}"
+        )
         return df
