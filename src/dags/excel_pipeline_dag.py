@@ -1,23 +1,37 @@
 """
 excel_pipeline_dag.py - DAG chính: Nạp tự động (Auto) hoặc thủ công (Force Run).
 
+KIẾN TRÚC WAVE (v2 — theo BÁO CÁO, không theo mã bảng):
+  - Upload: chạy 1 lần / FILE VẬT LÝ (1 task upload_one xử lý mọi file_id
+    dùng chung file đó, VD B01-DN chứa cả dim_report_item_b01 lẫn
+    fact_balance_sheet — chỉ tính MD5/upload 1 lần).
+  - Load: chia theo WAVE của BÁO CÁO (không phải mã bảng), đảm bảo đúng
+    thứ tự phụ thuộc dim → fact đã xác nhận:
+      Wave 0: Danh sách KH, Danh sách NH, Hệ thống TK, Kho, Hàng hóa,
+              B01-DN, Kế hoạch KD (độc lập)
+      Wave 1: Danh sách NCC, TK ngân hàng, B02-DN, Hợp đồng tiền gửi,
+              Công nợ phải thu KH, BC Tín dụng, Sổ CT bán hàng,
+              Tổng hợp tồn kho
+      Wave 2: Sổ CT mua hàng, Sổ CT các tài khoản, Công nợ phải trả NCC
+
 FIXES so với phiên bản cũ:
   Fix 1 — Import SDK Airflow 3.x (dag, task, Param từ airflow.sdk)
   Fix 2 — expand() trên list rỗng gây lỗi "no task to map" khi priority=[];
            dùng task chained thay vì expand trực tiếp trên list rỗng.
   Fix 3 — DAG run conf là dict, không dùng được context["dag_run"].conf khi
            chạy từ Scheduler (conf=None); đã thêm guard `or {}`.
-  Fix 4 — Thiếu dependency giữa loaded_priority và uploaded_others khi dùng
-           dynamic task mapping — dùng trigger_rule để tránh skip cascade.
+  Fix 4 — Thiếu dependency giữa các wave khi dùng dynamic task mapping —
+           dùng trigger_rule=ALL_DONE + chain thủ công giữa các wave.
 """
 from __future__ import annotations
 import logging
 import uuid
+import re
+import calendar
 from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Any
-import re
-import calendar
+
 # ─── Fix 1: Import từ airflow.sdk (Airflow 3.x) ───────────────────────────
 try:
     from airflow.sdk import dag, task, Param  # Airflow 3.x
@@ -37,8 +51,83 @@ PROJECT_ROOT = "/mnt/c/excel-pipeline"
 CONFIG_PATH  = f"{PROJECT_ROOT}/config/pipeline_config.yaml"
 LANDING_DIR  = "data/raw"
 
-# File_id nào cần chạy trước các file khác (Dim trước Fact)
-PRIORITY_FILE_IDS = {"dim_bank"}
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# WAVE THEO BÁO CÁO (không phải theo file_id/mã bảng)
+# =============================================================================
+
+ETL_WAVES_BY_REPORT: list[set[str]] = [
+    # Wave 0 — độc lập, không phụ thuộc báo cáo nào khác
+    {
+        "danh_sach_khach_hang",
+        "danh_sach_ngan_hang",
+        "danh_sach_he_thong_tai_khoan",
+        "danh_sach_kho",
+        "danh_sach_hang_hoa_dich_vu",
+        "b01_dn",
+        "ke_hoach_kinh_doanh",
+    },
+    # Wave 1 — phụ thuộc 1 báo cáo ở Wave 0
+    {
+        "danh_sach_nha_cung_cap",
+        "danh_sach_tai_khoan_ngan_hang",
+        "b02_dn",
+        "hop_dong_tien_gui",
+        "chi_tiet_cong_no_phai_thu_kh",
+        "bc_tin_dung",
+        "so_chi_tiet_ban_hang",
+        "tong_hop_ton_kho",
+    },
+    # Wave 2 — phụ thuộc 1 báo cáo ở Wave 1
+    {
+        "so_chi_tiet_mua_hang",
+        "so_chi_tiet_cac_tai_khoan",
+        "chi_tiet_cong_no_phai_tra_ncc",
+    },
+]
+
+# Map mỗi file_id → report_key (báo cáo/file vật lý chứa nó) — để tra wave
+FILE_ID_TO_REPORT: dict[str, str] = {
+    "dim_partner_khach_hang":      "danh_sach_khach_hang",
+    "dim_partner_nha_cung_cap":    "danh_sach_nha_cung_cap",
+    "dim_bank":                    "danh_sach_ngan_hang",
+    "dim_account_number":          "danh_sach_tai_khoan_ngan_hang",
+    "dim_account":                 "danh_sach_he_thong_tai_khoan",
+    "dim_warehouse":               "danh_sach_kho",
+    "dim_product":                 "danh_sach_hang_hoa_dich_vu",
+    "dim_report_item_b01":         "b01_dn",
+    "fact_balance_sheet":          "b01_dn",
+    "dim_report_item_b02":         "b02_dn",
+    "fact_income_statement":       "b02_dn",
+    "fact_inventory_outward":      "so_chi_tiet_ban_hang",
+    "fact_inventory_inward":       "so_chi_tiet_mua_hang",
+    "fact_inventory_balance":      "tong_hop_ton_kho",
+    "fact_cashflow":               "so_chi_tiet_cac_tai_khoan",
+    "fact_business_plan":          "ke_hoach_kinh_doanh",
+    "fact_term_deposit":           "hop_dong_tien_gui",
+    "fact_accounts_receivable":    "chi_tiet_cong_no_phai_thu_kh",
+    "fact_accounts_payable":       "chi_tiet_cong_no_phai_tra_ncc",
+    "fact_credit_limit_summary":   "bc_tin_dung",
+    "fact_loan":                   "bc_tin_dung",
+    "fact_collateral":             "bc_tin_dung",
+}
+
+
+def _wave_of_file_id(file_id: str) -> int:
+    """Trả về index wave (0-based) của file_id, tra qua report chứa nó.
+    Không map được -> wave cuối cùng (an toàn, chạy sau hết)."""
+    report_key = FILE_ID_TO_REPORT.get(file_id)
+    if report_key is None:
+        logger.warning("[wave] file_id '%s' không map được report — đẩy vào wave cuối.", file_id)
+        return len(ETL_WAVES_BY_REPORT) - 1
+    for i, wave_set in enumerate(ETL_WAVES_BY_REPORT):
+        if report_key in wave_set:
+            return i
+    logger.warning("[wave] report '%s' không khớp wave nào — đẩy vào wave cuối.", report_key)
+    return len(ETL_WAVES_BY_REPORT) - 1
+
 
 # 5 file_id thuộc 3 file nội bộ Google Sheets → không dùng bookmark MISA,
 # fallback ngày upload (date.today()) trong upload_task.py
@@ -46,8 +135,6 @@ INTERNAL_GG_SHEET_FILE_IDS = {
     "fact_loan", "fact_collateral", "fact_credit_limit_summary", "fact_term_deposit",
     "fact_business_plan",
 }
-
-logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -140,10 +227,8 @@ def _is_force_run(params: dict, conf: dict) -> bool:
     report_name = params.get("report_name", AUTO_CHOICE)
     return report_name != AUTO_CHOICE or bool(conf.get("force_upload", False))
 
-def _resolve_file_date(file_id: str, file_path: str | None = None):
-    from datetime import datetime, date
-    import calendar
 
+def _resolve_file_date(file_id: str, file_path: str | None = None):
     if file_id in INTERNAL_GG_SHEET_FILE_IDS:
         return None
 
@@ -153,10 +238,8 @@ def _resolve_file_date(file_id: str, file_path: str | None = None):
             y, mo = int(m.group(1)), int(m.group(2))
             today = date.today()
             if (y, mo) == (today.year, today.month):
-                # Tháng đang chạy dở -> dữ liệu chỉ có tới hôm nay
                 return today
             else:
-                # Tháng đã qua -> chắc chắn đã chốt đủ tới ngày cuối tháng
                 last_day = calendar.monthrange(y, mo)[1]
                 return date(y, mo, last_day)
 
@@ -169,6 +252,8 @@ def _resolve_file_date(file_id: str, file_path: str | None = None):
             file_id,
         )
         return None
+
+
 # =============================================================================
 # DAG
 # =============================================================================
@@ -193,16 +278,16 @@ default_args = {
 def excel_pipeline_dag():
 
     # ─────────────────────────────────────────────────────────────────────
-    # TASK 1: Quét file và phân loại priority / normal
+    # TASK 1: Quét file — trả về DANH SÁCH FILE VẬT LÝ (mỗi file giữ
+    # nguyên toàn bộ file_ids liên quan, không tách theo mã bảng).
     # ─────────────────────────────────────────────────────────────────────
     @task
-    def detect_changed_files(**context) -> dict[str, list[dict[str, str]]]:
+    def detect_changed_files(**context) -> dict[str, Any]:
         import os
         os.chdir(PROJECT_ROOT)
 
         load_config, match_files_in_dir, _, _ = _project_imports()
 
-        # Fix 3: conf có thể là None khi chạy từ scheduler
         params  = context.get("params") or {}
         dag_run = context.get("dag_run")
         conf    = (dag_run.conf if dag_run else None) or {}
@@ -214,7 +299,6 @@ def excel_pipeline_dag():
 
         config = load_config(CONFIG_PATH)
 
-        # Quét đệ quy toàn bộ landing_dir
         all_matches: dict[str, list[str]] = {}
         for root, _dirs, _files in os.walk(LANDING_DIR):
             sub = match_files_in_dir(root, config)
@@ -224,38 +308,26 @@ def excel_pipeline_dag():
         if not all_matches:
             logger.warning("Không tìm thấy file nào khớp trong %s", LANDING_DIR)
 
-        priority, normal = [], []
+        files: list[dict] = []
         for file_path, file_ids in all_matches.items():
-            for file_id in file_ids:
-                if only_file_ids and file_id not in only_file_ids:
-                    continue
-                item = {"file_path": file_path, "file_id": file_id}
-                (priority if file_id in PRIORITY_FILE_IDS else normal).append(item)
+            matched_ids = [fid for fid in file_ids if not only_file_ids or fid in only_file_ids]
+            if matched_ids:
+                files.append({"file_path": file_path, "file_ids": matched_ids})
 
-        logger.info(
-            "Phát hiện %d task wave 1 (priority) + %d task wave 2 (normal)",
-            len(priority), len(normal),
-        )
-        return {"priority": priority, "normal": normal}
-
-    # ─────────────────────────────────────────────────────────────────────
-    # Tách priority / normal từ XCom
-    # ─────────────────────────────────────────────────────────────────────
-    @task
-    def extract_priority(files_dict: dict) -> list[dict]:
-        return files_dict.get("priority") or []
+        logger.info("Phát hiện %d file vật lý cần upload.", len(files))
+        return {"files": files}
 
     @task
-    def extract_normal(files_dict: dict) -> list[dict]:
-        return files_dict.get("normal") or []
+    def extract_files(files_dict: dict) -> list[dict]:
+        return files_dict.get("files") or []
 
     # ─────────────────────────────────────────────────────────────────────
-    # TASK 2: Upload lên MinIO
-    # Trả về upload_result dict để task load đọc.
-    # Nếu skipped=True (MD5 không đổi) và không force → load sẽ tự bỏ qua.
+    # TASK 2: Upload — 1 task / FILE VẬT LÝ. Xử lý mọi file_id dùng
+    # chung file đó trong 1 lần chạy (VD B01-DN: dim_report_item_b01 +
+    # fact_balance_sheet), trả về LIST kết quả upload cho từng file_id.
     # ─────────────────────────────────────────────────────────────────────
     @task(retries=2, retry_delay=timedelta(minutes=2))
-    def upload_one(file_info: dict[str, str], **context) -> dict[str, Any]:
+    def upload_one(file_info: dict[str, Any], **context) -> list[dict[str, Any]]:
         import os
         os.chdir(PROJECT_ROOT)
         load_config, _, _, upload_task = _project_imports()
@@ -265,41 +337,60 @@ def excel_pipeline_dag():
         conf    = (dag_run.conf if dag_run else None) or {}
         force   = _is_force_run(params, conf)
 
-        config   = load_config(CONFIG_PATH)
-        batch_id = (
-            f"{file_info['file_id']}"
-            f"_{context['ts_nodash']}"
-            f"_{uuid.uuid4().hex[:8]}"
-        )
+        config    = load_config(CONFIG_PATH)
+        file_path = file_info["file_path"]
+        results: list[dict[str, Any]] = []
 
-        result = upload_task.run(
-            file_path=file_info["file_path"],
-            file_id=file_info["file_id"],
-            config=config,
-            batch_id=batch_id,
-            force_upload=force,
-            file_date=_resolve_file_date(file_info["file_id"], file_info["file_path"]),  # ← thêm file_path
-        )
+        for file_id in file_info["file_ids"]:
+            batch_id = f"{file_id}_{context['ts_nodash']}_{uuid.uuid4().hex[:8]}"
+            result = upload_task.run(
+                file_path=file_path,
+                file_id=file_id,
+                config=config,
+                batch_id=batch_id,
+                force_upload=force,
+                file_date=_resolve_file_date(file_id, file_path),
+            )
+            logger.info(
+                "[upload] %s | batch=%s | skipped=%s | path=%s | file_date=%s",
+                result.file_id, result.batch_id, result.skipped, result.minio_path, result.file_date,
+            )
+            results.append({
+                "file_id":    result.file_id,
+                "batch_id":   result.batch_id,
+                "minio_path": result.minio_path,
+                "skipped":    result.skipped,
+            })
+        return results
 
-        logger.info(
-            "[upload] %s | batch=%s | skipped=%s | path=%s | file_date=%s",
-            result.file_id, result.batch_id, result.skipped, result.minio_path, result.file_date,
-        )
-        return {
-            "file_id":    result.file_id,
-            "batch_id":   result.batch_id,
-            "minio_path": result.minio_path,
-            "skipped":    result.skipped,
-        }
     # ─────────────────────────────────────────────────────────────────────
-    # TASK 3: Load vào PostgreSQL
-    # Fix 4: trigger_rule=ALL_DONE agar task này không bị skip cascade
-    #        khi upstream dynamic task có 1 instance fail.
+    # Dàn phẳng kết quả upload (list of list -> list), rồi chia theo
+    # WAVE của BÁO CÁO chứa từng file_id.
+    # ─────────────────────────────────────────────────────────────────────
+    @task
+    def flatten_and_split_waves(upload_results: list[list[dict]]) -> dict[str, list[dict]]:
+        flat = [item for sub in (upload_results or []) for item in (sub or [])]
+        waves: list[list[dict]] = [[] for _ in ETL_WAVES_BY_REPORT]
+        for item in flat:
+            waves[_wave_of_file_id(item["file_id"])].append(item)
+        logger.info(
+            "Phân bổ load theo wave: %s",
+            ", ".join(f"wave{i}={len(w)}" for i, w in enumerate(waves)),
+        )
+        return {f"wave_{i}": w for i, w in enumerate(waves)}
+
+    @task
+    def extract_wave(waves_dict: dict, wave_index: int) -> list[dict]:
+        return waves_dict.get(f"wave_{wave_index}") or []
+
+    # ─────────────────────────────────────────────────────────────────────
+    # TASK 3: Load vào PostgreSQL — dùng chung cho mọi wave qua
+    # .override(task_id=...) ở phần wire-up.
     # ─────────────────────────────────────────────────────────────────────
     @task(
         retries=1,
         retry_delay=timedelta(minutes=3),
-        trigger_rule=TriggerRule.ALL_DONE,   # Fix 4
+        trigger_rule=TriggerRule.ALL_DONE,
     )
     def load_one(upload_result: dict[str, Any], **context) -> dict[str, Any]:
         import os
@@ -307,26 +398,17 @@ def excel_pipeline_dag():
         load_config, _, load_task, _ = _project_imports()
 
         params  = context.get("params") or {}
-        dag_run = context.get("dag_run")
-        conf    = (dag_run.conf if dag_run else None) or {}
-        force   = _is_force_run(params, conf) or bool(conf.get("force_load", False))
 
-        # ── THÊM: test mode — bỏ qua hoàn toàn bước load vào DB ──────────────
         if params.get("skip_load", False):
             logger.info(
                 "[load] %s: 🧪 Test mode (skip_load=True) → bỏ qua load vào DB.",
                 upload_result["file_id"],
             )
             return {"file_id": upload_result["file_id"], "status": "skipped_test_mode", "rows": 0}
-        # ───────────────────────────────────────────────────────────────────────
 
-        # Skip nếu upload không đổi và không force
-        if upload_result["skipped"] and not force:
-            logger.info(
-                "[load] %s: MD5 không đổi + force=False → bỏ qua.",
-                upload_result["file_id"],
-            )
-            return {"file_id": upload_result["file_id"], "status": "skipped", "rows": 0}
+        # ── ĐÃ BỎ: không còn check upload_result["skipped"] nữa ──
+        # ETL luôn chạy, dùng minio_path/batch_id có sẵn (dù file MD5 không đổi
+        # và không được upload lại lên MinIO).
 
         config = load_config(CONFIG_PATH)
         result = load_task.run(
@@ -369,10 +451,6 @@ def excel_pipeline_dag():
             )
             return
 
-        import re
-        from pathlib import Path
-        from datetime import date
-
         MISA_RAW_DIR = Path("/mnt/c/excel-pipeline/data/raw/misa")
         today = date.today()
         cur_suffix = f"_{today.year:04d}-{today.month:02d}.xlsx"
@@ -391,29 +469,25 @@ def excel_pipeline_dag():
                         logger.info(f"[cleanup] Đã xóa file tháng trước: {f.name}")
                     except Exception as e:
                         logger.warning(f"[cleanup] Không xóa được {f.name}: {e}")
-                        
+
     # ─────────────────────────────────────────────────────────────────────
-    # TASK 4 (optional): Tổng kết và ghi log cuối DAG run
+    # TASK 4: Tổng kết — nhận list kết quả của TẤT CẢ wave.
     # ─────────────────────────────────────────────────────────────────────
     @task(trigger_rule=TriggerRule.ALL_DONE)
-    def summarize(
-        priority_results: list[dict],
-        normal_results: list[dict],
-    ) -> dict[str, Any]:
-        # Fix: ép về list thật trước khi concat
-        p = list(priority_results) if priority_results else []
-        n = list(normal_results)   if normal_results   else []
-        all_results = p + n
+    def summarize(all_wave_results: list[list[dict]]) -> dict[str, Any]:
+        all_results: list[dict] = []
+        for wave_result in (all_wave_results or []):
+            all_results.extend(list(wave_result) if wave_result else [])
 
-        success    = [r for r in all_results if r.get("status") == "success"]
-        skipped    = [r for r in all_results if r.get("status") in ("skipped", "skipped_test_mode")]
-        failed     = [r for r in all_results if r.get("status") not in ("success", "skipped", "skipped_test_mode")]
+        success = [r for r in all_results if r.get("status") == "success"]
+        skipped = [r for r in all_results if r.get("status") in ("skipped", "skipped_test_mode")]
+        failed  = [r for r in all_results if r.get("status") not in ("success", "skipped", "skipped_test_mode")]
         total_rows = sum(r.get("rows", 0) for r in success)
 
         logger.info("=" * 60)
         logger.info("TỔNG KẾT DAG RUN")
         logger.info("  ✓ Thành công : %d file | %d dòng", len(success), total_rows)
-        logger.info("  ⏭ Bỏ qua    : %d file (MD5 không đổi)", len(skipped))
+        logger.info("  ⏭ Bỏ qua    : %d file (MD5 không đổi / test mode)", len(skipped))
         logger.info("  ✗ Lỗi       : %d file", len(failed))
         if failed:
             for r in failed:
@@ -426,45 +500,44 @@ def excel_pipeline_dag():
             "failed_count":  len(failed),
             "total_rows":    total_rows,
         }
+
     # ─────────────────────────────────────────────────────────────────────
-    # WIRE UP — 2 wave, priority xong trước normal
+    # WIRE UP
     #
-    #   detect → extract_priority → upload_one[] → load_one[]  ─┐
-    #                                                             ├→ summarize
-    #   detect → extract_normal   → upload_one[] → load_one[]  ─┘
-    #
-    # loaded_priority >> uploaded_normal đảm bảo Dim load xong trước Fact
+    #   detect → extract_files → upload_one[] (1/file vật lý)
+    #                                  ↓
+    #                       flatten_and_split_waves (chia theo báo cáo)
+    #                                  ↓
+    #     extract_wave(0) → load_one[] ──┐
+    #     extract_wave(1) → load_one[] ──┤ (tuần tự, wave sau chờ wave trước)
+    #     extract_wave(2) → load_one[] ──┘
+    #                                  ↓
+    #                             summarize → cleanup
     # ─────────────────────────────────────────────────────────────────────
-   # ─── WIRE UP ───────────────────────────────────────────────────────────────
     files_dict = detect_changed_files()
+    file_items = extract_files(files_dict)
 
-    priority_list = extract_priority(files_dict)
-    normal_list   = extract_normal(files_dict)
+    uploaded   = upload_one.expand(file_info=file_items)
+    waves_dict = flatten_and_split_waves(uploaded)
 
-    # Wave 1: Priority (Dim)
-    uploaded_priority = upload_one.expand(file_info=priority_list)
-    loaded_priority   = load_one.expand(upload_result=uploaded_priority)
+    loaded_per_wave = []
+    prev_wave_loaded = None
+    for i in range(len(ETL_WAVES_BY_REPORT)):
+        wave_items = extract_wave.override(task_id=f"extract_wave_{i}")(
+            waves_dict, wave_index=i
+        )
+        loaded = load_one.override(
+            task_id=f"load_wave_{i}",
+            trigger_rule=TriggerRule.ALL_DONE,
+        ).expand(upload_result=wave_items)
 
-    # Wave 2: Normal (Fact) — thêm .override() để không bị skip cascade từ wave 1
-    uploaded_normal = upload_one.override(
-        trigger_rule=TriggerRule.ALL_DONE,
-    ).expand(file_info=normal_list)
+        if prev_wave_loaded is not None:
+            prev_wave_loaded >> wave_items  # wave sau chỉ tách khỏi waves_dict sau khi wave trước load xong
 
-    loaded_normal = load_one.override(
-        trigger_rule=TriggerRule.ALL_DONE,
-    ).expand(upload_result=uploaded_normal)
+        loaded_per_wave.append(loaded)
+        prev_wave_loaded = loaded
 
-    # Wave 1 xong mới chạy Wave 2
-    loaded_priority >> uploaded_normal
-
-    # Tổng kết
-    result = summarize(
-        priority_results=loaded_priority,
-        normal_results=loaded_normal,
-    )
-
-    # Dọn file tháng trước SAU KHI ETL xong (chỉ giữ file tháng hiện tại
-    # cho 3 báo cáo B01_DN/B02_DN/INV_SUMMARY_V2 trên đĩa)
+    result = summarize(all_wave_results=loaded_per_wave)
     cleanup_prev_month_files(load_results=result)
 
 
