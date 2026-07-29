@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# VSCode
+.vscode/
+
+# Logs
+*.log
+
+# Zip
+*.zip
+
+# Selenium browser profile
+codegen_profile/
+misa_automation_profile/
+misa_automation_profile_new/
+
+# Cookies
+misa_cookies.json
+misa_cookies.backup.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+*_profile/
